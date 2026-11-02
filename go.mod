@@ -1,4 +1,4 @@
-module waybar-mpris-lyrics
+module waybar-lyrics
 
 go 1.20
 

@@ -1,4 +1,4 @@
-# Waybar MPRIS Lyrics
+# waybar-lyrics
 
 一个用于 Waybar 的自定义模块，可显示来自 MPRIS 播放器的同步歌词。歌词来源支持网易云音乐与 LRCLib。
 
@@ -19,7 +19,7 @@
 可从 AUR 安装(还没提交,请稍等一段时间...)：
 
 ```bash
-yay -S waybar-mpris-lyrics-git
+yay -S waybar-lyrics-git
 ```
 
 ### 手动安装
@@ -31,15 +31,15 @@ yay -S waybar-mpris-lyrics-git
 2.  **构建**：
 
     ```bash
-    git clone https://github.com/kndxhz/waybar-MPRIS-lyrics.git
-    cd waybar-MPRIS-lyrics
-    go build -o waybar-mpris-lyrics
+    git clone https://github.com/kndxhz/waybar-lyrics.git
+    cd waybar-lyrics
+    go build -o waybar-lyrics
     ```
 
 3.  **安装**：
 
     ```bash
-    sudo install -Dm755 waybar-mpris-lyrics /usr/bin/waybar-mpris-lyrics
+    sudo install -Dm755 waybar-lyrics /usr/bin/waybar-lyrics
     ```
 
 ## 配置
@@ -48,7 +48,7 @@ yay -S waybar-mpris-lyrics-git
 
 ```json
 "custom/lyrics": {
-    "exec": "waybar-mpris-lyrics 2> /dev/null",
+    "exec": "waybar-lyrics 2> /dev/null",
     "return-type": "json",
     "format": "{}",
     "on-click": "playerctl play-pause",
