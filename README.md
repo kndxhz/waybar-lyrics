@@ -1,13 +1,14 @@
 # waybar-lyrics
 
-一个用于 Waybar 的自定义模块，可显示来自 MPRIS 播放器的同步歌词。歌词来源支持网易云音乐与 LRCLib。
+一个用于 Waybar 的自定义模块，可显示来自 MPRIS 播放器的同步歌词。歌词来源按 TTML 歌词库、网易云音乐、LRCLib 的顺序检索。
 
 ## 功能特性
 
 - **MPRIS 集成**：自动检测 MPRIS 兼容播放器（如 Spotify、VLC、mpv）当前播放歌曲。
 - **歌词来源**：
-  - 网易云音乐（主来源）
-  - LRCLib（兜底来源）
+  - AMLL TTML DB（优先，逐词 TTML 转为逐行显示）
+  - 网易云音乐（TTML 未命中时）
+  - LRCLib（前两级未命中时）
 - **双语支持**：支持显示原文歌词与翻译歌词（如有）。
 - **Waybar 兼容**：输出符合 Waybar custom 模块要求的 JSON 格式。
 - **控制能力**：支持通过 Waybar 点击事件控制播放/暂停、上一首、下一首。

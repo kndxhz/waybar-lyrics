@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 var base_163 = "https://music.163.com"
 var base_lrclib = "https://lrclib.net"
+var base_ttml = "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/ncm-lyrics"
 
 // LyricData 定义歌词API响应结构
 type LyricData struct {
@@ -33,7 +35,7 @@ type LyricData struct {
 
 // LyricResult 定义歌词返回结果
 type LyricResult struct {
-	Original   string // 原歌词
+	Original    string // 原歌词
 	Translation string // 翻译歌词
 }
 
@@ -57,8 +59,8 @@ type ParsedLyrics struct {
 type SearchResult struct {
 	Result struct {
 		Songs []struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
+			ID      int    `json:"id"`
+			Name    string `json:"name"`
 			Artists []struct {
 				Name string `json:"name"`
 			} `json:"artists"`
@@ -70,26 +72,26 @@ type SearchResult struct {
 
 // LrcLibResult 定义 lrclib 搜索响应
 type LrcLibResult struct {
-	ID          int    `json:"id"`
-	TrackName   string `json:"trackName"`
-	ArtistName  string `json:"artistName"`
-	AlbumName   string `json:"albumName"`
-	Duration    int    `json:"duration"`
-	Instrumental bool  `json:"instrumental"`
-	PlainLyrics string `json:"plainLyrics"`
+	ID           int    `json:"id"`
+	TrackName    string `json:"trackName"`
+	ArtistName   string `json:"artistName"`
+	AlbumName    string `json:"albumName"`
+	Duration     int    `json:"duration"`
+	Instrumental bool   `json:"instrumental"`
+	PlainLyrics  string `json:"plainLyrics"`
 	SyncedLyrics string `json:"syncedLyrics"`
 }
 
 // PlayerMetadata 定义播放器元数据
 type PlayerMetadata struct {
-	Player    string // 播放器名称
-	TrackID   string // 歌曲ID (splayer用)
-	Title     string
-	Artist    string
-	Album     string
-	Duration  int64  // 时长 (微秒)
-	Position  int64  // 播放位置 (微秒)
-	ArtUrl    string
+	Player   string // 播放器名称
+	TrackID  string // 歌曲ID (splayer用)
+	Title    string
+	Artist   string
+	Album    string
+	Duration int64 // 时长 (微秒)
+	Position int64 // 播放位置 (微秒)
+	ArtUrl   string
 }
 
 func main() {
@@ -180,6 +182,10 @@ func resolveLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 	}
 
 	if songID != "" {
+		if ttml := getTTMLLyrics(songID); ttml != nil {
+			return ttml
+		}
+
 		result := get_lyrics(songID)
 		if result != nil {
 			if strings.TrimSpace(result.Translation) == "" {
@@ -213,6 +219,192 @@ func resolveLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 	return nil
 }
 
+type ttmlContent struct {
+	Text  string
+	Child *ttmlNode
+}
+
+type ttmlNode struct {
+	Name     xml.Name
+	Attrs    []xml.Attr
+	Content  []ttmlContent
+	Children []*ttmlNode
+}
+
+func parseTTML(content string) *ParsedLyrics {
+	decoder := xml.NewDecoder(strings.NewReader(content))
+	var stack []*ttmlNode
+	var root *ttmlNode
+
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil
+		}
+
+		switch token := token.(type) {
+		case xml.StartElement:
+			node := &ttmlNode{Name: token.Name, Attrs: token.Attr}
+			if len(stack) == 0 {
+				root = node
+			} else {
+				parent := stack[len(stack)-1]
+				parent.Content = append(parent.Content, ttmlContent{Child: node})
+				parent.Children = append(parent.Children, node)
+			}
+			stack = append(stack, node)
+		case xml.EndElement:
+			if len(stack) == 0 {
+				return nil
+			}
+			stack = stack[:len(stack)-1]
+		case xml.CharData:
+			if len(stack) > 0 {
+				stack[len(stack)-1].Content = append(stack[len(stack)-1].Content, ttmlContent{Text: string(token)})
+			}
+		}
+	}
+
+	if root == nil {
+		return nil
+	}
+
+	parsed := &ParsedLyrics{}
+	collectTTMLParagraphs(root, parsed)
+	if len(parsed.Original) == 0 {
+		return nil
+	}
+	sort.SliceStable(parsed.Original, func(i, j int) bool {
+		return parsed.Original[i].TimeMs < parsed.Original[j].TimeMs
+	})
+	sort.SliceStable(parsed.Translation, func(i, j int) bool {
+		return parsed.Translation[i].TimeMs < parsed.Translation[j].TimeMs
+	})
+	return parsed
+}
+
+func collectTTMLParagraphs(node *ttmlNode, parsed *ParsedLyrics) {
+	if node.Name.Local == "p" {
+		var original strings.Builder
+		var translation strings.Builder
+		var firstWordTime int64 = -1
+		collectTTMLText(node, &original, &translation, &firstWordTime, false)
+		startMs, ok := parseTTMLTime(attrValue(node, "begin"))
+		if !ok {
+			startMs = firstWordTime
+		}
+		originalText := strings.TrimSpace(original.String())
+		translationText := strings.TrimSpace(translation.String())
+		if startMs >= 0 && originalText != "" {
+			parsed.Original = append(parsed.Original, TimedLyricLine{TimeMs: startMs, Text: originalText})
+			if translationText != "" {
+				parsed.Translation = append(parsed.Translation, TimedLyricLine{TimeMs: startMs, Text: translationText})
+			}
+		}
+		return
+	}
+	for _, child := range node.Children {
+		collectTTMLParagraphs(child, parsed)
+	}
+}
+
+func collectTTMLText(node *ttmlNode, original, translation *strings.Builder, firstWordTime *int64, inTranslation bool) {
+	role := attrValue(node, "role")
+	if strings.Contains(role, "roman") {
+		return
+	}
+	inTranslation = inTranslation || strings.Contains(role, "translation")
+	if node.Name.Local == "span" && attrValue(node, "begin") != "" {
+		if beginMs, ok := parseTTMLTime(attrValue(node, "begin")); ok && (*firstWordTime < 0 || beginMs < *firstWordTime) {
+			*firstWordTime = beginMs
+		}
+	}
+	for _, item := range node.Content {
+		if item.Child != nil {
+			collectTTMLText(item.Child, original, translation, firstWordTime, inTranslation)
+			continue
+		}
+		if inTranslation {
+			translation.WriteString(item.Text)
+		} else {
+			original.WriteString(item.Text)
+		}
+	}
+}
+
+func attrValue(node *ttmlNode, localName string) string {
+	for _, attr := range node.Attrs {
+		if attr.Name.Local == localName {
+			return attr.Value
+		}
+	}
+	return ""
+}
+
+func parseTTMLTime(value string) (int64, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+
+	for _, unit := range []struct {
+		suffix string
+		factor float64
+	}{{"ms", 1}, {"h", 3600000}, {"m", 60000}, {"s", 1000}} {
+		if strings.HasSuffix(value, unit.suffix) {
+			number, err := strconv.ParseFloat(strings.TrimSuffix(value, unit.suffix), 64)
+			if err != nil {
+				return 0, false
+			}
+			return int64(number * unit.factor), true
+		}
+	}
+
+	parts := strings.Split(value, ":")
+	if len(parts) == 3 {
+		hours, err1 := strconv.ParseFloat(parts[0], 64)
+		minutes, err2 := strconv.ParseFloat(parts[1], 64)
+		seconds, err3 := strconv.ParseFloat(parts[2], 64)
+		if err1 != nil || err2 != nil || err3 != nil {
+			return 0, false
+		}
+		return int64((hours*3600 + minutes*60 + seconds) * 1000), true
+	}
+
+	seconds, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, false
+	}
+	return int64(seconds * 1000), true
+}
+
+func getTTMLLyrics(songID string) *ParsedLyrics {
+	requestURL := strings.TrimRight(base_ttml, "/") + "/" + url.PathEscape(songID) + ".ttml"
+	client := &http.Client{Timeout: 8 * time.Second}
+	request, err := http.NewRequest(http.MethodGet, requestURL, nil)
+	if err != nil {
+		return nil
+	}
+	request.Header.Set("User-Agent", "waybar-lyrics")
+
+	response, err := client.Do(request)
+	if err != nil {
+		return nil
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil
+	}
+
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return nil
+	}
+	return parseTTML(string(body))
+}
 func parseLRC(content string) []TimedLyricLine {
 	if strings.TrimSpace(content) == "" {
 		return nil
@@ -344,7 +536,7 @@ func buildCurrentLyricText(metadata *PlayerMetadata, lyrics *ParsedLyrics) strin
 	positionMs := metadata.Position / 1000
 	original := currentLineAt(lyrics.Original, positionMs)
 	translation := currentLineAt(lyrics.Translation, positionMs)
- 
+
 	if original == "" && translation == "" {
 		return ""
 	}
@@ -650,7 +842,7 @@ func get_lyrics(song_id string) *LyricResult {
 
 	// 返回解析结果
 	return &LyricResult{
-		Original:   data.Lrc.Lyric,
+		Original:    data.Lrc.Lyric,
 		Translation: data.Tlyric.Lyric,
 	}
 }
