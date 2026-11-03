@@ -41,9 +41,9 @@ yay -S waybar-lyrics-git
    sudo install -Dm755 waybar-lyrics /usr/bin/waybar-lyrics
    ```
 
-## 播放器配置
+## 播放器模式与配置
 
-配置文件路径为 `$XDG_CONFIG_HOME/waybar-lyrics/waybar-lyrics.yaml`；未设置 `XDG_CONFIG_HOME` 时使用 `$HOME/.config/waybar-lyrics/waybar-lyrics.yaml`。不创建配置文件时默认使用普通 MPRIS 模式。
+配置文件路径为 `$XDG_CONFIG_HOME/waybar-lyrics/waybar-lyrics.yaml`；未设置 `XDG_CONFIG_HOME` 时使用 `$HOME/.config/waybar-lyrics/waybar-lyrics.yaml`。没有配置文件时默认使用 `mpris` 模式。
 
 ```yaml
 # 可选值：mpris、splayer、splayer-next
@@ -53,11 +53,33 @@ splayer:
   # SPlayer-Next 外部 API 地址和端口
   address: 127.0.0.1
   port: 14558
-  # auto：优先读取播放器提供的网易云 ID；search：始终按标题和歌手搜索
+  # auto：尝试从播放器元数据读取网易云歌曲 ID；search：始终按标题和歌手搜索
   song_id_mode: auto
 ```
 
-也可以把地址和端口写在 `splayer.api` 下，适用于已有这类配置结构的用户：
+### `mpris`：普通 MPRIS 播放器
+
+通过桌面会话的 D-Bus MPRIS 接口读取播放器元数据，自动选择一个非 SPlayer 的 MPRIS 播放器。适用于 Spotify、VLC、mpv 等兼容 MPRIS 的播放器。此模式不会连接 SPlayer-Next HTTP API，也不会选择名称中包含 `splayer` 的 MPRIS 服务。
+
+### `splayer`：旧版 SPlayer
+
+通过 D-Bus MPRIS 读取旧版 SPlayer 元数据，只选择名称中包含 `splayer` 的 MPRIS 服务，不会回退到其他播放器。此模式不调用 SPlayer-Next HTTP API。
+
+### `splayer-next`：SPlayer-Next
+
+通过本机 HTTP API 读取当前曲目信息和播放进度，并优先使用 API 返回的同步歌词。API 有歌词时直接显示，不再查询其他歌词源；API 无可用歌词时，继续使用播放器提供的网易云歌曲 ID 或按标题和歌手搜索。
+
+SPlayer-Next 外部 API 默认关闭，需要先在 SPlayer-Next 的“设置 → 外部 API”中开启。默认监听地址为 `127.0.0.1:14558`。配置示例：
+
+```yaml
+mode: splayer-next
+splayer:
+  address: 127.0.0.1
+  port: 14558
+  song_id_mode: auto
+```
+
+地址和端口也支持写在 `splayer.api` 下：
 
 ```yaml
 mode: splayer-next
@@ -68,14 +90,14 @@ splayer:
     port: 14558
 ```
 
-SPlayer-Next 的外部 API 默认关闭，需要在 SPlayer-Next 的“设置 → 外部 API”中开启。该接口默认只监听本机，默认端口为 `14558`。
+### 歌曲识别与歌词回退
 
-三种模式的歌词匹配流程如下：
+`song_id_mode` 对三种模式都生效：
 
-1. SPlayer-Next API 已提供歌词时直接显示 API 歌词。
-2. 否则尝试读取播放器元数据中的网易云歌曲 ID。
-3. 没有可用歌曲 ID 时按标题和歌手搜索网易云歌曲。
-4. 按 AMLL TTML DB → 网易云音乐 → LRCLib 的顺序获取歌词。
+- `auto`：尝试从播放器提供的曲目 ID 中提取网易云歌曲 ID；无法提取时，按标题和歌手搜索网易云歌曲。默认值为 `auto`。
+- `search`：忽略曲目 ID，始终按标题和歌手搜索网易云歌曲。
+
+得到网易云歌曲 ID 后，依次尝试 AMLL TTML DB、网易云音乐歌词和 LRCLib。TTML 中的逐词时间会合并为逐行歌词；SPlayer-Next API 自带的歌词则在这些歌词库之前直接使用。
 
 ## Waybar 配置
 
