@@ -1,6 +1,6 @@
 # Maintainer: kndxhz <kndxhz@163.com>
 pkgname=waybar-lyrics-git
-pkgver=r16.010bf5c
+pkgver=r21.1002ef5
 pkgrel=1
 pkgdesc="Waybar synchronized lyrics from MPRIS, SPlayer, and SPlayer-Next"
 arch=('x86_64')
