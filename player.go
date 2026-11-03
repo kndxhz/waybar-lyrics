@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -55,13 +57,22 @@ func splayerBaseURL() string {
 		address = "127.0.0.1"
 	}
 	if !strings.Contains(address, "://") {
+		if net.ParseIP(address) != nil && strings.Contains(address, ":") {
+			address = "[" + address + "]"
+		}
 		address = "http://" + address
 	}
-	base := strings.TrimRight(address, "/")
-	if appConfig.SPlayer.Port > 0 && !strings.Contains(strings.TrimPrefix(base, "http://"), ":") && !strings.Contains(strings.TrimPrefix(base, "https://"), ":") {
-		base += ":" + strconv.Itoa(appConfig.SPlayer.Port)
+	parsed, err := url.Parse(address)
+	if err != nil || parsed.Hostname() == "" {
+		return ""
 	}
-	return base + "/api"
+	if parsed.Port() == "" && appConfig.SPlayer.Port > 0 {
+		parsed.Host = net.JoinHostPort(parsed.Hostname(), strconv.Itoa(appConfig.SPlayer.Port))
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/api"
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/")
 }
 
 func fetchJSON(path string, target any) bool {

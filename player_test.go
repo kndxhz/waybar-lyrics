@@ -88,3 +88,30 @@ func TestSPlayerNextMetadataAndLyrics(t *testing.T) {
 		t.Fatalf("API 元数据异常: %#v", metadata)
 	}
 }
+
+func TestSPlayerBaseURL(t *testing.T) {
+	oldConfig := appConfig
+	defer func() { appConfig = oldConfig }()
+
+	tests := []struct {
+		name    string
+		address string
+		port    int
+		want    string
+	}{
+		{name: "host and configured port", address: "127.0.0.1", port: 14558, want: "http://127.0.0.1:14558/api"},
+		{name: "explicit port", address: "http://localhost:15558", port: 14558, want: "http://localhost:15558/api"},
+		{name: "base path", address: "https://example.com/player/", port: 14558, want: "https://example.com:14558/player/api"},
+		{name: "ipv6 host", address: "::1", port: 14558, want: "http://[::1]:14558/api"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			appConfig = defaultConfig()
+			appConfig.SPlayer.Address = test.address
+			appConfig.SPlayer.Port = test.port
+			if got := splayerBaseURL(); got != test.want {
+				t.Fatalf("API 地址错误: got %q, want %q", got, test.want)
+			}
+		})
+	}
+}
