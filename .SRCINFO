@@ -1,6 +1,6 @@
 pkgbase = waybar-lyrics-git
-	pkgdesc = A Waybar custom module that displays synchronized lyrics from MPRIS players
-	pkgver = r14.d86247d
+	pkgdesc = Waybar synchronized lyrics from MPRIS, SPlayer, and SPlayer-Next
+	pkgver = r16.010bf5c
 	pkgrel = 1
 	url = https://github.com/kndxhz/waybar-lyrics
 	arch = x86_64

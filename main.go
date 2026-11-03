@@ -3,10 +3,13 @@ package main
 import (
 	"encoding/json"
 	"encoding/xml"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -96,7 +99,26 @@ type PlayerMetadata struct {
 }
 
 func main() {
-	appConfig = loadConfig()
+	mode, err := parseCLI(os.Args[1:], os.Stdout)
+	if errors.Is(err, flag.ErrHelp) {
+		return
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "参数错误：", err)
+		os.Exit(2)
+	}
+
+	appConfig, err = loadConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	appConfig, err = applyModeOverride(appConfig, mode)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "配置错误：", err)
+		os.Exit(1)
+	}
+
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 

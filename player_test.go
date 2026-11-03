@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,6 +27,64 @@ func TestResolveLyricsUsesPlayerLyrics(t *testing.T) {
 	}
 }
 
+func TestLoadConfigCreatesDefault(t *testing.T) {
+	dir := t.TempDir()
+	old := os.Getenv("XDG_CONFIG_HOME")
+	if err := os.Setenv("XDG_CONFIG_HOME", dir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Setenv("XDG_CONFIG_HOME", old)
+
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.Mode != "mpris" || config.SPlayer.Address != "127.0.0.1" || config.SPlayer.Port != 14558 {
+		t.Fatalf("默认配置异常: %#v", config)
+	}
+	if _, err := os.Stat(configPath()); err != nil {
+		t.Fatalf("默认配置文件未自动创建: %v", err)
+	}
+}
+
+func TestParseCLI(t *testing.T) {
+	var output bytes.Buffer
+	mode, err := parseCLI([]string{"--mode", "splayer-next"}, &output)
+	if err != nil || mode != "splayer-next" {
+		t.Fatalf("解析 --mode 异常: mode=%q err=%v", mode, err)
+	}
+	mode, err = parseCLI([]string{"-m", "splayer"}, &output)
+	if err != nil || mode != "splayer" {
+		t.Fatalf("解析 -m 异常: mode=%q err=%v", mode, err)
+	}
+	if _, err = parseCLI([]string{"--invalid"}, &output); err == nil {
+		t.Fatal("未知参数应返回错误")
+	}
+}
+
+func TestApplyModeOverride(t *testing.T) {
+	config := defaultConfig()
+	config.Mode = "splayer"
+	got, err := applyModeOverride(config, "splayer-next")
+	if err != nil || got.Mode != "splayer-next" {
+		t.Fatalf("命令行模式未覆盖配置: config=%#v err=%v", got, err)
+	}
+	got, err = applyModeOverride(config, "invalid")
+	if err == nil || got.Mode != "invalid" {
+		t.Fatalf("非法模式应校验失败: config=%#v err=%v", got, err)
+	}
+}
+
+func TestParseCLIHelp(t *testing.T) {
+	var output bytes.Buffer
+	if _, err := parseCLI([]string{"--help"}, &output); !errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("--help 应返回 flag.ErrHelp，实际为 %v", err)
+	}
+	if !strings.Contains(output.String(), "用法：waybar-lyrics") || !strings.Contains(output.String(), "-mode string") {
+		t.Fatalf("帮助内容不完整: %s", output.String())
+	}
+}
+
 func TestLoadConfig(t *testing.T) {
 	dir := t.TempDir()
 	configDir := filepath.Join(dir, "waybar-lyrics")
@@ -38,7 +100,10 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Setenv("XDG_CONFIG_HOME", old)
-	config := loadConfig()
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if config.Mode != "splayer-next" || config.SPlayer.Port != 15558 || config.SPlayer.SongIDMode != "search" {
 		t.Fatalf("配置解析异常: %#v", config)
 	}
@@ -59,7 +124,10 @@ func TestLoadConfigNestedAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.Setenv("XDG_CONFIG_HOME", old)
-	config := loadConfig()
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if config.SPlayer.Address != "192.168.1.20" || config.SPlayer.Port != 16666 {
 		t.Fatalf("嵌套 API 配置解析异常: %#v", config)
 	}

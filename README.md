@@ -15,7 +15,7 @@
 
 ### Arch Linux（AUR）
 
-可从 AUR 安装（还没提交，请稍等一段时间）：
+可从 AUR 安装（包文件已准备，上传后可使用）：
 
 ```bash
 yay -S waybar-lyrics-git
@@ -43,7 +43,19 @@ yay -S waybar-lyrics-git
 
 ## 播放器模式与配置
 
-配置文件路径为 `$XDG_CONFIG_HOME/waybar-lyrics/waybar-lyrics.yaml`；未设置 `XDG_CONFIG_HOME` 时使用 `$HOME/.config/waybar-lyrics/waybar-lyrics.yaml`。没有配置文件时默认使用 `mpris` 模式。
+配置文件路径为 `$XDG_CONFIG_HOME/waybar-lyrics/waybar-lyrics.yaml`；未设置 `XDG_CONFIG_HOME` 时使用 `$HOME/.config/waybar-lyrics/waybar-lyrics.yaml`。首次启动时会自动创建配置目录和默认配置文件（默认模式为 `mpris`）。
+
+可通过命令行参数临时覆盖 YAML 中的播放器模式，优先级高于配置文件且不会修改配置文件：
+
+```bash
+waybar-lyrics --mode splayer-next
+# 简写
+waybar-lyrics -m splayer
+# 查看帮助
+waybar-lyrics --help
+```
+
+`--mode`/`-m` 可选值为 `mpris`、`splayer`、`splayer-next`。未传入参数时使用 YAML 配置中的 `mode`。
 
 ```yaml
 # 可选值：mpris、splayer、splayer-next

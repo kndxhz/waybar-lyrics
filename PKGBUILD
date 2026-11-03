@@ -1,8 +1,8 @@
 # Maintainer: kndxhz <kndxhz@163.com>
 pkgname=waybar-lyrics-git
-pkgver=r14.d86247d
+pkgver=r16.010bf5c
 pkgrel=1
-pkgdesc="A Waybar custom module that displays synchronized lyrics from MPRIS players"
+pkgdesc="Waybar synchronized lyrics from MPRIS, SPlayer, and SPlayer-Next"
 arch=('x86_64')
 url="https://github.com/kndxhz/waybar-lyrics"
 license=('GPL3')
@@ -28,6 +28,12 @@ build() {
     export GOFLAGS="-buildmode=pie -trimpath -ldflags=-linkmode=external -mod=readonly -modcacherw"
 
     go build -o waybar-lyrics .
+}
+
+check() {
+    cd "$srcdir/${pkgname%-git}"
+    export GOFLAGS="-mod=readonly -modcacherw"
+    go test ./...
 }
 
 package() {
