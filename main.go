@@ -92,9 +92,11 @@ type PlayerMetadata struct {
 	Duration int64 // 时长 (微秒)
 	Position int64 // 播放位置 (微秒)
 	ArtUrl   string
+	Lyrics   *ParsedLyrics // 播放器 API 已提供的歌词
 }
 
 func main() {
+	appConfig = loadConfig()
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -167,9 +169,12 @@ func renderWaybar(out WaybarOutput) string {
 }
 
 func resolveLyrics(metadata *PlayerMetadata) *ParsedLyrics {
+	if metadata.Lyrics != nil && len(metadata.Lyrics.Original) > 0 {
+		return metadata.Lyrics
+	}
 	var songID string
 
-	if strings.HasPrefix(metadata.Player, "splayer") && metadata.TrackID != "" {
+	if appConfig.SPlayer.SongIDMode != "search" && metadata.TrackID != "" {
 		re := regexp.MustCompile(`/(\d+)$`)
 		matches := re.FindStringSubmatch(metadata.TrackID)
 		if len(matches) > 1 {
@@ -558,7 +563,7 @@ func buildCurrentLyricText(metadata *PlayerMetadata, lyrics *ParsedLyrics) strin
 }
 
 // getPlayerMetadata 通过 D-Bus MPRIS 接口获取播放器元数据
-func getPlayerMetadata() *PlayerMetadata {
+func getMPRISMetadata(preferred string) *PlayerMetadata {
 	// 连接到 D-Bus
 	conn, err := dbus.SessionBus()
 	if err != nil {
@@ -577,24 +582,17 @@ func getPlayerMetadata() *PlayerMetadata {
 	var playerName string
 	var foundPlayer bool
 
-	// 首先查找 splayer，然后再找其他播放器
 	var targetPlayer string
+	// 按模式选择播放器：旧 SPlayer 不回退到其他 MPRIS，普通 MPRIS 排除 SPlayer。
 	for _, name := range names {
-		if strings.HasPrefix(name, "org.mpris.MediaPlayer2.") {
-			if strings.Contains(name, "splayer") {
-				targetPlayer = name
-				break
-			}
+		if !strings.HasPrefix(name, "org.mpris.MediaPlayer2.") {
+			continue
 		}
-	}
-
-	// 如果没找到 splayer，就用第一个 MPRIS 播放器
-	if targetPlayer == "" {
-		for _, name := range names {
-			if strings.HasPrefix(name, "org.mpris.MediaPlayer2.") {
-				targetPlayer = name
-				break
-			}
+		shortName := strings.TrimPrefix(name, "org.mpris.MediaPlayer2.")
+		isSPlayer := strings.Contains(strings.ToLower(shortName), "splayer")
+		if (preferred == "splayer" && isSPlayer) || (preferred == "" && !isSPlayer) {
+			targetPlayer = name
+			break
 		}
 	}
 
