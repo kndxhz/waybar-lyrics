@@ -89,6 +89,7 @@ type LrcLibResult struct {
 type PlayerMetadata struct {
 	Player   string // 播放器名称
 	TrackID  string // 歌曲ID (splayer用)
+	Source   string // 歌曲来源平台 (splayer-next 用，例如 netease)
 	Title    string
 	Artist   string
 	Album    string
@@ -125,6 +126,7 @@ func main() {
 	lastSongKey := ""
 	lastRendered := ""
 	var currentLyrics *ParsedLyrics
+	lastResolve := time.Now()
 
 	for {
 		metadata := getPlayerMetadata()
@@ -141,8 +143,14 @@ func main() {
 
 		songKey := buildSongKey(metadata)
 		if songKey != lastSongKey {
-			currentLyrics = resolveLyrics(metadata)
 			lastSongKey = songKey
+			currentLyrics = resolveLyrics(metadata)
+			lastResolve = time.Now()
+		} else if lyricsNeedRefresh(currentLyrics, metadata, time.Since(lastResolve)) {
+			// 播放器大多在切歌后才异步去取歌词，首次解析可能落空。
+			// 这里在歌词为空时持续重试，避免整首歌都卡在“歌手 - 歌名”。
+			currentLyrics = resolveLyrics(metadata)
+			lastResolve = time.Now()
 		}
 
 		text := buildCurrentLyricText(metadata, currentLyrics)
@@ -190,17 +198,42 @@ func renderWaybar(out WaybarOutput) string {
 	return string(buf)
 }
 
+// lyricRetryInterval 歌词解析失败后的重试间隔
+const lyricRetryInterval = 5 * time.Second
+
+// lyricsNeedRefresh 判断是否需要在同一首歌内重新解析歌词
+func lyricsNeedRefresh(current *ParsedLyrics, metadata *PlayerMetadata, sinceLast time.Duration) bool {
+	if current != nil {
+		return false
+	}
+	if metadata.Lyrics != nil && len(metadata.Lyrics.Original) > 0 {
+		return true
+	}
+	return sinceLast >= lyricRetryInterval
+}
+
 func resolveLyrics(metadata *PlayerMetadata) *ParsedLyrics {
+	lyrics := lookupLyrics(metadata)
+	if lyrics == nil || (len(lyrics.Original) == 0 && len(lyrics.Translation) == 0) {
+		// 网易云对一些歌曲会返回空歌词（例如 "sfy":true 的版权限制），
+		// 必须当作解析失败，否则空结果会被当成“已解析”而不再重试，
+		// 整首歌都会卡在“歌手 - 歌名”。
+		return nil
+	}
+	return lyrics
+}
+
+func lookupLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 	if metadata.Lyrics != nil && len(metadata.Lyrics.Original) > 0 {
 		return metadata.Lyrics
 	}
 	var songID string
 
 	if appConfig.SPlayer.SongIDMode != "search" && metadata.TrackID != "" {
-		re := regexp.MustCompile(`/(\d+)$`)
-		matches := re.FindStringSubmatch(metadata.TrackID)
-		if len(matches) > 1 {
-			songID = matches[1]
+		// splayer-next 的 TraceID 是裸数字（如网易云 2694839533），
+		// 非网易云来源则不能直接当作网易云 ID 使用，退回搜索。
+		if metadata.Player != "splayer-next" || metadata.Source == "" || metadata.Source == "netease" {
+			songID = extractTrackID(metadata.TrackID)
 		}
 	}
 
@@ -555,14 +588,58 @@ func currentLineAt(lines []TimedLyricLine, positionMs int64) string {
 	return strings.TrimSpace(lines[idx-1].Text)
 }
 
+func currentLineIndex(lines []TimedLyricLine, positionMs int64) int {
+	if len(lines) == 0 {
+		return -1
+	}
+	idx := sort.Search(len(lines), func(i int) bool {
+		return lines[i].TimeMs > positionMs
+	})
+	return idx - 1
+}
+
+// translationForLine 取原歌词第 idx 行对应的翻译。
+// 翻译行可能只覆盖部分歌词（甚至只有第 0 行），因此必须按时间窗口
+// 限定在当前行内，不能沿用“最后一个早于 position 的翻译行”。
+func translationForLine(lyrics *ParsedLyrics, idx int) string {
+	if idx < 0 || idx >= len(lyrics.Original) {
+		return ""
+	}
+	start := lyrics.Original[idx].TimeMs
+	end := int64(-1)
+	if idx+1 < len(lyrics.Original) {
+		end = lyrics.Original[idx+1].TimeMs
+	}
+
+	i := sort.Search(len(lyrics.Translation), func(i int) bool {
+		return lyrics.Translation[i].TimeMs >= start
+	})
+	if i >= len(lyrics.Translation) {
+		return ""
+	}
+	if end >= 0 && lyrics.Translation[i].TimeMs >= end {
+		return ""
+	}
+	return strings.TrimSpace(lyrics.Translation[i].Text)
+}
+
 func buildCurrentLyricText(metadata *PlayerMetadata, lyrics *ParsedLyrics) string {
 	if lyrics == nil {
 		return ""
 	}
 
 	positionMs := metadata.Position / 1000
-	original := currentLineAt(lyrics.Original, positionMs)
-	translation := currentLineAt(lyrics.Translation, positionMs)
+	idx := currentLineIndex(lyrics.Original, positionMs)
+
+	original := ""
+	translation := ""
+	if idx >= 0 {
+		original = strings.TrimSpace(lyrics.Original[idx].Text)
+		translation = translationForLine(lyrics, idx)
+	} else {
+		// 只有翻译、没有原文的歌词源
+		translation = currentLineAt(lyrics.Translation, positionMs)
+	}
 
 	if original == "" && translation == "" {
 		return ""
@@ -576,11 +653,6 @@ func buildCurrentLyricText(metadata *PlayerMetadata, lyrics *ParsedLyrics) strin
 		return translation
 	}
 
-	// Use Pango markup for multiline: <span size='small'>...</span>
-	// But simply \n works if Waybar label supports it.
-	// Let's try to return Text as is, but maybe the issue is newlines being stripped by Waybar or not rendered if height is small.
-	// A common trick is to use <span rise='-1000'> or separate lines.
-	// But let's first ensure we are flushing stdout.
 	return original + "\n" + translation
 }
 

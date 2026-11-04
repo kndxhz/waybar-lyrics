@@ -152,7 +152,7 @@ func TestSPlayerNextMetadataAndLyrics(t *testing.T) {
 	appConfig.SPlayer.Port = 0
 	defer func() { appConfig = oldConfig }()
 	metadata := getSPlayerNextMetadata()
-	if metadata == nil || metadata.Title != "歌曲" || metadata.Lyrics == nil {
+	if metadata == nil || metadata.Title != "歌曲" || metadata.Source != "netease" || metadata.Lyrics == nil {
 		t.Fatalf("API 元数据异常: %#v", metadata)
 	}
 }
@@ -181,5 +181,23 @@ func TestSPlayerBaseURL(t *testing.T) {
 				t.Fatalf("API 地址错误: got %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestExtractTrackID(t *testing.T) {
+	tests := []struct {
+		value string
+		want  string
+	}{
+		{"2694839533", "2694839533"},
+		{"org.mpris.MediaPlayer2.splayer/track/12345", "12345"},
+		{"local-id", ""},
+		{"", ""},
+		{"org.mpris.MediaPlayer2.splayer/track/", ""},
+	}
+	for _, test := range tests {
+		if got := extractTrackID(test.value); got != test.want {
+			t.Errorf("extractTrackID(%q) = %q, want %q", test.value, got, test.want)
+		}
 	}
 }

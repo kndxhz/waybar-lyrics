@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestParseTTMLSkipsRomanization(t *testing.T) {
@@ -94,5 +95,202 @@ func TestParseTTMLTime(t *testing.T) {
 		if !ok || got != test.want {
 			t.Errorf("parseTTMLTime(%q) = (%d, %t), want (%d, true)", test.value, got, ok, test.want)
 		}
+	}
+}
+
+func TestCurrentLineIndex(t *testing.T) {
+	lines := []TimedLyricLine{{TimeMs: 0, Text: "a"}, {TimeMs: 1000, Text: "b"}, {TimeMs: 2000, Text: "c"}}
+	tests := []struct {
+		position int64
+		want     int
+	}{
+		{-1, -1},
+		{0, 0},
+		{999, 0},
+		{1000, 1},
+		{1999, 1},
+		{2000, 2},
+		{999999, 2},
+	}
+	for _, test := range tests {
+		if got := currentLineIndex(lines, test.position); got != test.want {
+			t.Errorf("currentLineIndex(%d) = %d, want %d", test.position, got, test.want)
+		}
+	}
+	if got := currentLineIndex(nil, 0); got != -1 {
+		t.Errorf("空歌词应返回 -1，got %d", got)
+	}
+}
+
+func TestTranslationForLineStaysInWindow(t *testing.T) {
+	lyrics := &ParsedLyrics{
+		Original: []TimedLyricLine{{TimeMs: 0, Text: "a"}, {TimeMs: 1000, Text: "b"}, {TimeMs: 2000, Text: "c"}},
+		// 稀疏翻译：只有第一行有翻译，后面的行不应复用第一行翻译
+		Translation: []TimedLyricLine{{TimeMs: 0, Text: "A"}},
+	}
+	if got := translationForLine(lyrics, 0); got != "A" {
+		t.Errorf("第一行翻译 = %q, want A", got)
+	}
+	if got := translationForLine(lyrics, 1); got != "" {
+		t.Errorf("第二行不应复用第一行翻译，got %q", got)
+	}
+	if got := translationForLine(lyrics, 2); got != "" {
+		t.Errorf("第三行不应复用第一行翻译，got %q", got)
+	}
+
+	// 翻译时间戳落在当前行窗口内时才应生效
+	lyrics.Translation = []TimedLyricLine{{TimeMs: 0, Text: "A"}, {TimeMs: 1500, Text: "B"}, {TimeMs: 2000, Text: "C"}}
+	if got := translationForLine(lyrics, 1); got != "B" {
+		t.Errorf("窗口内翻译 = %q, want B", got)
+	}
+	if got := translationForLine(lyrics, 2); got != "C" {
+		t.Errorf("末行翻译 = %q, want C", got)
+	}
+}
+
+func TestBuildCurrentLyricTextSparseTranslation(t *testing.T) {
+	lyrics := &ParsedLyrics{
+		Original:    []TimedLyricLine{{TimeMs: 0, Text: "いつか"}, {TimeMs: 1000, Text: "二人はじまった場所"}},
+		Translation: []TimedLyricLine{{TimeMs: 0, Text: "曾经"}},
+	}
+	// Position 单位为微秒，buildCurrentLyricText 内部换算成毫秒
+	if got := buildCurrentLyricText(&PlayerMetadata{Position: 1500 * 1000}, lyrics); got != "二人はじまった場所" {
+		t.Errorf("第二行不应复用第一行翻译，got %q", got)
+	}
+	if got := buildCurrentLyricText(&PlayerMetadata{Position: 500 * 1000}, lyrics); got != "いつか\n曾经" {
+		t.Errorf("第一行应显示翻译，got %q", got)
+	}
+}
+
+func TestBuildCurrentLyricTextTranslationOnlySource(t *testing.T) {
+	lyrics := &ParsedLyrics{Translation: []TimedLyricLine{{TimeMs: 0, Text: "hello"}}}
+	if got := buildCurrentLyricText(&PlayerMetadata{Position: 0}, lyrics); got != "hello" {
+		t.Errorf("只有翻译的歌词源应显示翻译，got %q", got)
+	}
+}
+
+func TestLyricsNeedRefresh(t *testing.T) {
+	lyrics := &ParsedLyrics{Original: []TimedLyricLine{{TimeMs: 0, Text: "x"}}}
+	tests := []struct {
+		name     string
+		current  *ParsedLyrics
+		metadata *PlayerMetadata
+		since    time.Duration
+		want     bool
+	}{
+		{"已有歌词不重试", lyrics, &PlayerMetadata{}, 0, false},
+		{"播放器随后提供了歌词，立即可用", nil, &PlayerMetadata{Lyrics: lyrics}, 0, true},
+		{"未到重试间隔", nil, &PlayerMetadata{}, lyricRetryInterval - time.Millisecond, false},
+		{"到达重试间隔", nil, &PlayerMetadata{}, lyricRetryInterval, true},
+	}
+	for _, test := range tests {
+		if got := lyricsNeedRefresh(test.current, test.metadata, test.since); got != test.want {
+			t.Errorf("%s: lyricsNeedRefresh() = %t, want %t", test.name, got, test.want)
+		}
+	}
+}
+
+func TestResolveLyricsUsesNeteaseTrackIDDirectly(t *testing.T) {
+	searchCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/2694839533.ttml":
+			writer.WriteHeader(http.StatusNotFound)
+		case "/api/song/lyric":
+			if got := request.URL.Query().Get("id"); got != "2694839533" {
+				t.Errorf("歌词接口使用了错误的 ID: %q", got)
+			}
+			_, _ = writer.Write([]byte(`{"lrc":{"lyric":"[00:00.00]来自网易云"},"tlyric":{"lyric":""},"code":200}`))
+		case "/api/search/get/web":
+			searchCalled = true
+			writer.WriteHeader(http.StatusInternalServerError)
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	restoreTTML, restore163 := base_ttml, base_163
+	base_ttml, base_163 = server.URL, server.URL
+	t.Cleanup(func() { base_ttml, base_163 = restoreTTML, restore163 })
+
+	oldConfig := appConfig
+	appConfig = defaultConfig()
+	t.Cleanup(func() { appConfig = oldConfig })
+
+	lyrics := resolveLyrics(&PlayerMetadata{Player: "splayer-next", Source: "netease", TrackID: "2694839533"})
+	if lyrics == nil || len(lyrics.Original) != 1 || lyrics.Original[0].Text != "来自网易云" {
+		t.Fatalf("未按网易云 ID 解析歌词: %#v", lyrics)
+	}
+	if searchCalled {
+		t.Fatal("netease 来源不应再调用搜索接口")
+	}
+}
+
+func TestResolveLyricsSearchesForNonNeteaseSource(t *testing.T) {
+	var lyricIDs []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/search/get/web":
+			_, _ = writer.Write([]byte(`{"code":200,"result":{"songs":[{"id":777}]}}`))
+		case "/777.ttml":
+			writer.WriteHeader(http.StatusNotFound)
+		case "/api/song/lyric":
+			lyricIDs = append(lyricIDs, request.URL.Query().Get("id"))
+			_, _ = writer.Write([]byte(`{"lrc":{"lyric":"[00:00.00]搜索结果歌词"},"tlyric":{"lyric":""},"code":200}`))
+		default:
+			// 裸数字 TrackID 不应被当作网易云 ID 直接使用
+			if request.URL.Path == "/123456.ttml" || request.URL.Query().Get("id") == "123456" {
+				t.Errorf("非网易云来源不应直接使用 TrackID: %s", request.URL.String())
+			}
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	restoreTTML, restore163 := base_ttml, base_163
+	base_ttml, base_163 = server.URL, server.URL
+	t.Cleanup(func() { base_ttml, base_163 = restoreTTML, restore163 })
+
+	oldConfig := appConfig
+	appConfig = defaultConfig()
+	t.Cleanup(func() { appConfig = oldConfig })
+
+	lyrics := resolveLyrics(&PlayerMetadata{Player: "splayer-next", Source: "qq", TrackID: "123456", Title: "歌", Artist: "手"})
+	if lyrics == nil || len(lyrics.Original) != 1 || lyrics.Original[0].Text != "搜索结果歌词" {
+		t.Fatalf("非网易云来源未回退到搜索: %#v", lyrics)
+	}
+	if len(lyricIDs) != 1 || lyricIDs[0] != "777" {
+		t.Fatalf("搜索得到的 ID 未被使用: %v", lyricIDs)
+	}
+}
+
+func TestResolveLyricsTreatsEmptyResultAsFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/2694839533.ttml":
+			writer.WriteHeader(http.StatusNotFound)
+		case "/api/song/lyric":
+			// 网易云对版权受限歌曲返回空歌词
+			_, _ = writer.Write([]byte(`{"sgc":false,"sfy":true,"lrc":{"lyric":""},"tlyric":{"lyric":""},"code":200}`))
+		case "/api/get":
+			writer.WriteHeader(http.StatusNotFound)
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	restoreTTML, restore163, restoreLrcLib := base_ttml, base_163, base_lrclib
+	base_ttml, base_163, base_lrclib = server.URL, server.URL, server.URL
+	t.Cleanup(func() { base_ttml, base_163, base_lrclib = restoreTTML, restore163, restoreLrcLib })
+
+	oldConfig := appConfig
+	appConfig = defaultConfig()
+	t.Cleanup(func() { appConfig = oldConfig })
+
+	lyrics := resolveLyrics(&PlayerMetadata{Player: "splayer-next", Source: "netease", TrackID: "2694839533", Title: "歌", Artist: "手"})
+	if lyrics != nil {
+		t.Fatalf("空歌词应视为解析失败以便重试，got %#v", lyrics)
 	}
 }

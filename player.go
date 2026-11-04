@@ -124,7 +124,7 @@ func getSPlayerNextMetadata() *PlayerMetadata {
 	if artist == "" {
 		return nil
 	}
-	metadata := &PlayerMetadata{Player: "splayer-next", TrackID: track.ID, Title: track.Title, Artist: artist, Album: track.Album.Name, Duration: track.Duration * 1000, ArtUrl: track.Cover}
+	metadata := &PlayerMetadata{Player: "splayer-next", TrackID: track.ID, Source: track.Source, Title: track.Title, Artist: artist, Album: track.Album.Name, Duration: track.Duration * 1000, ArtUrl: track.Cover}
 	if raw.Position > 0 {
 		metadata.Position = raw.Position * 1000
 	}
