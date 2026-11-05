@@ -23,6 +23,14 @@ var base_163 = "https://music.163.com"
 var base_lrclib = "https://lrclib.net"
 var base_ttml = "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/ncm-lyrics"
 
+// 歌词来源标识，会追加到 Waybar tooltip 中
+const (
+	lyricsSourceAPI    = "API"    // 播放器 API 自带歌词（SPlayer-Next）
+	lyricsSourceTTML   = "TTML"   // AMLL TTML DB
+	lyricsSourceNCM    = "NCM"    // 网易云音乐
+	lyricsSourceLrcLib = "LRCLib" // LRCLib
+)
+
 // LyricData 定义歌词API响应结构
 type LyricData struct {
 	Lrc struct {
@@ -56,6 +64,7 @@ type TimedLyricLine struct {
 type ParsedLyrics struct {
 	Original    []TimedLyricLine
 	Translation []TimedLyricLine
+	Source      string // 歌词来源，取值见 lyricsSource* 常量
 }
 
 // SearchResult 定义搜索API响应结构
@@ -160,7 +169,7 @@ func main() {
 
 		out := WaybarOutput{
 			Text:    text,
-			Tooltip: buildText(metadata),
+			Tooltip: buildTooltip(metadata, currentLyrics),
 			Class:   "lyrics",
 		}
 		rendered := renderWaybar(out)
@@ -188,6 +197,15 @@ func buildText(metadata *PlayerMetadata) string {
 		return metadata.Title
 	}
 	return metadata.Artist + " - " + metadata.Title
+}
+
+// buildTooltip 在“歌手 - 歌名”后追加歌词来源，未解析到歌词时不显示来源。
+func buildTooltip(metadata *PlayerMetadata, lyrics *ParsedLyrics) string {
+	text := buildText(metadata)
+	if lyrics == nil || lyrics.Source == "" {
+		return text
+	}
+	return text + " - " + lyrics.Source
 }
 
 func renderWaybar(out WaybarOutput) string {
@@ -225,6 +243,9 @@ func resolveLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 
 func lookupLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 	if metadata.Lyrics != nil && len(metadata.Lyrics.Original) > 0 {
+		if metadata.Lyrics.Source == "" {
+			metadata.Lyrics.Source = lyricsSourceAPI
+		}
 		return metadata.Lyrics
 	}
 	var songID string
@@ -254,6 +275,7 @@ func lookupLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 					return &ParsedLyrics{
 						Original:    orig,
 						Translation: trans,
+						Source:      lyricsSourceNCM,
 					}
 				}
 			}
@@ -261,6 +283,7 @@ func lookupLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 			return &ParsedLyrics{
 				Original:    parseLRC(result.Original),
 				Translation: parseLRC(result.Translation),
+				Source:      lyricsSourceNCM,
 			}
 		}
 	}
@@ -269,10 +292,10 @@ func lookupLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 	lrcLibResult := searchLrcLib(metadata.Title, metadata.Artist, metadata.Album, durationSec)
 	if lrcLibResult != nil {
 		if lrcLibResult.SyncedLyrics != "" {
-			return &ParsedLyrics{Original: parseLRC(lrcLibResult.SyncedLyrics)}
+			return &ParsedLyrics{Original: parseLRC(lrcLibResult.SyncedLyrics), Source: lyricsSourceLrcLib}
 		}
 		if lrcLibResult.PlainLyrics != "" {
-			return &ParsedLyrics{Original: []TimedLyricLine{{TimeMs: 0, Text: lrcLibResult.PlainLyrics}}}
+			return &ParsedLyrics{Original: []TimedLyricLine{{TimeMs: 0, Text: lrcLibResult.PlainLyrics}}, Source: lyricsSourceLrcLib}
 		}
 	}
 
@@ -463,7 +486,11 @@ func getTTMLLyrics(songID string) *ParsedLyrics {
 	if err != nil {
 		return nil
 	}
-	return parseTTML(string(body))
+	lyrics := parseTTML(string(body))
+	if lyrics != nil {
+		lyrics.Source = lyricsSourceTTML
+	}
+	return lyrics
 }
 func parseLRC(content string) []TimedLyricLine {
 	if strings.TrimSpace(content) == "" {

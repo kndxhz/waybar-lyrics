@@ -25,6 +25,9 @@ func TestResolveLyricsUsesPlayerLyrics(t *testing.T) {
 	if got != lyrics {
 		t.Fatalf("未优先使用播放器歌词: %#v", got)
 	}
+	if got.Source != lyricsSourceAPI {
+		t.Fatalf("播放器歌词来源应为 API: %q", got.Source)
+	}
 }
 
 func TestLoadConfigCreatesDefault(t *testing.T) {

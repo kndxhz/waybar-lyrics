@@ -7,6 +7,7 @@
 - **三种播放器模式**：普通 MPRIS、旧版 SPlayer（MPRIS）和 SPlayer-Next（HTTP API）彼此独立。
 - **SPlayer-Next 歌词优先**：API 已返回当前歌词时直接使用，不再搜索歌曲；API 没有歌词时才读取网易云歌曲 ID，必要时按标题和歌手搜索。
 - **歌词来源**：AMLL TTML DB 优先，逐词 TTML 会转换为逐行显示；未命中后依次使用网易云音乐和 LRCLib。
+- **来源提示**：tooltip 在“歌手 - 歌名”后显示歌词来源，取值为 `API`（播放器 API）、`TTML`（AMLL TTML DB）、`NCM`（网易云音乐）、`LRCLib`（LRCLib）。未解析到歌词时不显示来源。
 - **双语支持**：支持显示原文歌词与翻译歌词（如有）。
 - **Waybar 兼容**：输出符合 Waybar custom 模块要求的 JSON 格式。
 - **控制能力**：支持通过 Waybar 点击事件控制播放/暂停、上一首、下一首。

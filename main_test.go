@@ -40,6 +40,9 @@ func TestResolveLyricsPrefersTTML(t *testing.T) {
 	if lyrics == nil || len(lyrics.Original) != 1 || lyrics.Original[0].Text != "hello" {
 		t.Fatalf("unexpected lyrics: %#v", lyrics)
 	}
+	if lyrics.Source != lyricsSourceTTML {
+		t.Fatalf("unexpected lyrics source: %q", lyrics.Source)
+	}
 }
 
 func TestResolveLyricsFallsBackToNCM(t *testing.T) {
@@ -65,6 +68,9 @@ func TestResolveLyricsFallsBackToNCM(t *testing.T) {
 	if lyrics == nil || len(lyrics.Original) != 1 || lyrics.Original[0].Text != "from ncm" {
 		t.Fatalf("unexpected lyrics: %#v", lyrics)
 	}
+	if lyrics.Source != lyricsSourceNCM {
+		t.Fatalf("unexpected lyrics source: %q", lyrics.Source)
+	}
 }
 
 func TestParseTTMLMergesWordSpansIntoLines(t *testing.T) {
@@ -77,6 +83,66 @@ func TestParseTTMLMergesWordSpansIntoLines(t *testing.T) {
 	}
 	if len(lyrics.Translation) != 1 || lyrics.Translation[0].TimeMs != 1250 || lyrics.Translation[0].Text != "你好，世界" {
 		t.Fatalf("unexpected translation lyrics: %#v", lyrics.Translation)
+	}
+}
+
+func buildTooltipTestMetadata() *PlayerMetadata {
+	return &PlayerMetadata{Artist: "歌手", Title: "歌名"}
+}
+
+func TestBuildTooltipAppendsLyricsSource(t *testing.T) {
+	metadata := buildTooltipTestMetadata()
+	tests := []struct {
+		name   string
+		lyrics *ParsedLyrics
+		want   string
+	}{
+		{"未解析到歌词", nil, "歌手 - 歌名"},
+		{"来源为空", &ParsedLyrics{}, "歌手 - 歌名"},
+		{"TTML 来源", &ParsedLyrics{Source: lyricsSourceTTML}, "歌手 - 歌名 - TTML"},
+		{"NCM 来源", &ParsedLyrics{Source: lyricsSourceNCM}, "歌手 - 歌名 - NCM"},
+	}
+	for _, test := range tests {
+		if got := buildTooltip(metadata, test.lyrics); got != test.want {
+			t.Errorf("%s: buildTooltip() = %q, want %q", test.name, got, test.want)
+		}
+	}
+
+	metadata.Artist = ""
+	if got := buildTooltip(metadata, &ParsedLyrics{Source: lyricsSourceAPI}); got != "歌名 - API" {
+		t.Errorf("无歌手时应仍追加来源: %q", got)
+	}
+}
+
+func TestResolveLyricsSourceFromLrcLib(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/2694839533.ttml":
+			writer.WriteHeader(http.StatusNotFound)
+		case "/api/song/lyric":
+			writer.WriteHeader(http.StatusNotFound)
+		case "/api/get":
+			_, _ = writer.Write([]byte(`{"syncedLyrics":"[00:01.00]from lrclib"}`))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	restoreTTML, restore163, restoreLrcLib := base_ttml, base_163, base_lrclib
+	base_ttml, base_163, base_lrclib = server.URL, server.URL, server.URL
+	t.Cleanup(func() { base_ttml, base_163, base_lrclib = restoreTTML, restore163, restoreLrcLib })
+
+	oldConfig := appConfig
+	appConfig = defaultConfig()
+	t.Cleanup(func() { appConfig = oldConfig })
+
+	lyrics := resolveLyrics(&PlayerMetadata{Player: "splayer-next", Source: "netease", TrackID: "2694839533", Title: "歌", Artist: "手"})
+	if lyrics == nil || len(lyrics.Original) != 1 || lyrics.Original[0].Text != "from lrclib" {
+		t.Fatalf("unexpected lyrics: %#v", lyrics)
+	}
+	if lyrics.Source != lyricsSourceLrcLib {
+		t.Fatalf("unexpected lyrics source: %q", lyrics.Source)
 	}
 }
 
