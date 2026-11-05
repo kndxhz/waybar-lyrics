@@ -256,6 +256,99 @@ func TestLyricsNeedRefresh(t *testing.T) {
 	}
 }
 
+func TestShouldWaitForPlayerLyrics(t *testing.T) {
+	oldConfig := appConfig
+	appConfig = defaultConfig()
+	t.Cleanup(func() { appConfig = oldConfig })
+
+	playerLyrics := &ParsedLyrics{Original: []TimedLyricLine{{TimeMs: 0, Text: "api"}}}
+	tests := []struct {
+		name     string
+		mode     string
+		metadata *PlayerMetadata
+		elapsed  time.Duration
+		want     bool
+	}{
+		{"splayer-next 切歌后等待", "splayer-next", &PlayerMetadata{}, 0, true},
+		{"splayer-next 等待期结束", "splayer-next", &PlayerMetadata{}, lyricAPIGracePeriod, false},
+		{"播放器歌词已就绪", "splayer-next", &PlayerMetadata{Lyrics: playerLyrics}, 0, false},
+		{"普通 MPRIS 不等待", "mpris", &PlayerMetadata{}, 0, false},
+	}
+	for _, test := range tests {
+		appConfig.Mode = test.mode
+		if got := shouldWaitForPlayerLyrics(test.metadata, test.elapsed); got != test.want {
+			t.Errorf("%s: shouldWaitForPlayerLyrics() = %t, want %t", test.name, got, test.want)
+		}
+	}
+}
+
+func TestShouldUpgradeLyrics(t *testing.T) {
+	apiLyrics := &ParsedLyrics{Original: []TimedLyricLine{{TimeMs: 0, Text: "api"}}}
+	external := &ParsedLyrics{Original: []TimedLyricLine{{TimeMs: 0, Text: "ext"}}, Source: lyricsSourceNCM}
+	tests := []struct {
+		name     string
+		current  *ParsedLyrics
+		metadata *PlayerMetadata
+		want     bool
+	}{
+		{"无当前歌词", nil, &PlayerMetadata{Lyrics: apiLyrics}, false},
+		{"已是播放器歌词", &ParsedLyrics{Source: lyricsSourceAPI}, &PlayerMetadata{Lyrics: apiLyrics}, false},
+		{"外部歌词可升级", external, &PlayerMetadata{Lyrics: apiLyrics}, true},
+		{"播放器暂无歌词", external, &PlayerMetadata{}, false},
+	}
+	for _, test := range tests {
+		if got := shouldUpgradeLyrics(test.current, test.metadata); got != test.want {
+			t.Errorf("%s: shouldUpgradeLyrics() = %t, want %t", test.name, got, test.want)
+		}
+	}
+}
+
+func TestSPlayerModeUsesControlAPISongID(t *testing.T) {
+	searchCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/control/song-info":
+			_, _ = writer.Write([]byte(`{"code":200,"message":"ok","data":{"id":2694839533}}`))
+		case "/2694839533.ttml":
+			_, _ = writer.Write([]byte(`<tt><body><p begin="1s"><span begin="1s" end="1.5s">来自 TTML</span></p></body></tt>`))
+		case "/api/search/get/web":
+			searchCalled = true
+			writer.WriteHeader(http.StatusInternalServerError)
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	restoreTTML, restore163 := base_ttml, base_163
+	base_ttml, base_163 = server.URL, server.URL
+	t.Cleanup(func() { base_ttml, base_163 = restoreTTML, restore163 })
+
+	oldConfig := appConfig
+	appConfig = defaultConfig()
+	appConfig.Mode = "splayer"
+	appConfig.SPlayer.Address = server.URL
+	appConfig.SPlayer.ControlPort = 0
+	t.Cleanup(func() { appConfig = oldConfig })
+
+	metadata := &PlayerMetadata{
+		Player:  "splayer",
+		TrackID: "org.mpris.MediaPlayer2.splayer/track/0",
+		Title:   "歌",
+		Artist:  "手",
+	}
+	lyrics := resolveLyrics(metadata)
+	if lyrics == nil || len(lyrics.Original) != 1 || lyrics.Original[0].Text != "来自 TTML" {
+		t.Fatalf("未使用 ControlAPI 歌曲 ID 解析歌词: %#v", lyrics)
+	}
+	if lyrics.Source != lyricsSourceTTML {
+		t.Fatalf("歌词来源错误: %q", lyrics.Source)
+	}
+	if searchCalled {
+		t.Fatal("ControlAPI 提供 ID 后不应再调用搜索接口")
+	}
+}
+
 func TestResolveLyricsUsesNeteaseTrackIDDirectly(t *testing.T) {
 	searchCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

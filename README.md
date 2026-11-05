@@ -5,7 +5,7 @@
 ## 功能特性
 
 - **三种播放器模式**：普通 MPRIS、旧版 SPlayer（MPRIS）和 SPlayer-Next（HTTP API）彼此独立。
-- **SPlayer-Next 歌词优先**：API 已返回当前歌词时直接使用，不再搜索歌曲；API 没有歌词时才读取网易云歌曲 ID，必要时按标题和歌手搜索。
+- **SPlayer-Next 歌词优先**：切歌后先等待播放器 API 加载歌词，避免过早回退到外部歌词源；API 一直不可用时才读取网易云歌曲 ID，必要时按标题和歌手搜索。若外部歌词先加载、API 歌词随后才就绪，会自动切回播放器歌词。
 - **歌词来源**：AMLL TTML DB 优先，逐词 TTML 会转换为逐行显示；未命中后依次使用网易云音乐和 LRCLib。
 - **来源提示**：tooltip 在“歌手 - 歌名”后显示歌词来源，取值为 `API`（播放器 API）、`TTML`（AMLL TTML DB）、`NCM`（网易云音乐）、`LRCLib`（LRCLib）。未解析到歌词时不显示来源。
 - **双语支持**：支持显示原文歌词与翻译歌词（如有）。
@@ -66,7 +66,9 @@ splayer:
   # SPlayer-Next 外部 API 地址和端口
   address: 127.0.0.1
   port: 14558
-  # auto：尝试从播放器元数据读取网易云歌曲 ID；search：始终按标题和歌手搜索
+  # 旧版 SPlayer 的本地 ControlAPI 端口（mode: splayer 时用于读取歌曲 ID）
+  control_port: 25884
+  # auto：优先使用播放器提供的网易云歌曲 ID；search：始终按标题和歌手搜索
   song_id_mode: auto
 ```
 
@@ -76,11 +78,11 @@ splayer:
 
 ### `splayer`：旧版 SPlayer
 
-通过 D-Bus MPRIS 读取旧版 SPlayer 元数据，只选择名称中包含 `splayer` 的 MPRIS 服务，不会回退到其他播放器。此模式不调用 SPlayer-Next HTTP API。
+通过 D-Bus MPRIS 读取旧版 SPlayer 元数据，只选择名称中包含 `splayer` 的 MPRIS 服务，不会回退到其他播放器。旧版 SPlayer 由 Electron 暴露 MPRIS，`mpris:trackid` 不一定是网易云歌曲 ID，因此会额外请求其本地 ControlAPI `GET /api/control/song-info` 获取当前歌曲 ID（默认端口 `25884`，可用 `control_port` 修改）。ControlAPI 不可用或返回非网易云歌曲时才退回 MPRIS 元数据。此模式不调用 SPlayer-Next HTTP API。
 
 ### `splayer-next`：SPlayer-Next
 
-通过本机 HTTP API 读取当前曲目信息和播放进度，并优先使用 API 返回的同步歌词。API 有歌词时直接显示，不再查询其他歌词源；API 无可用歌词时，继续使用播放器提供的网易云歌曲 ID 或按标题和歌手搜索。
+通过本机 HTTP API 读取当前曲目信息和播放进度，并优先使用 API 返回的同步歌词。切歌后会先等待最多 2 秒，让 SPlayer-Next 加载自己的歌词；等待期结束仍无歌词时才回退到外部歌词源。如果外部歌词已经先加载、API 歌词随后才就绪，会自动切换回 API 歌词，使显示内容与 SPlayer-Next 保持一致。API 无可用歌词时，继续使用播放器提供的网易云歌曲 ID 或按标题和歌手搜索。
 
 SPlayer-Next 外部 API 默认关闭，需要先在 SPlayer-Next 的“设置 → 外部 API”中开启。默认监听地址为 `127.0.0.1:14558`。配置示例：
 
@@ -107,8 +109,8 @@ splayer:
 
 `song_id_mode` 对三种模式都生效：
 
-- `auto`：尝试从播放器提供的曲目 ID 中提取网易云歌曲 ID；无法提取时，按标题和歌手搜索网易云歌曲。默认值为 `auto`。
-- `search`：忽略曲目 ID，始终按标题和歌手搜索网易云歌曲。
+- `auto`：尝试从播放器提供的曲目 ID 中提取网易云歌曲 ID；`splayer` 模式会先向旧版 SPlayer 的 ControlAPI 查询当前歌曲 ID。无法提取时，按标题和歌手搜索网易云歌曲。默认值为 `auto`。
+- `search`：忽略曲目 ID，始终按标题和歌手搜索网易云歌曲（`splayer` 模式下也不会请求 ControlAPI）。
 
 得到网易云歌曲 ID 后，依次尝试 AMLL TTML DB、网易云音乐歌词和 LRCLib。TTML 中的逐词时间会合并为逐行歌词；SPlayer-Next API 自带的歌词则在这些歌词库之前直接使用。
 

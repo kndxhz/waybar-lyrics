@@ -135,7 +135,8 @@ func main() {
 	lastSongKey := ""
 	lastRendered := ""
 	var currentLyrics *ParsedLyrics
-	lastResolve := time.Now()
+	lastResolve := time.Time{}
+	songStartedAt := time.Now()
 
 	for {
 		metadata := getPlayerMetadata()
@@ -153,11 +154,23 @@ func main() {
 		songKey := buildSongKey(metadata)
 		if songKey != lastSongKey {
 			lastSongKey = songKey
-			currentLyrics = resolveLyrics(metadata)
-			lastResolve = time.Now()
-		} else if lyricsNeedRefresh(currentLyrics, metadata, time.Since(lastResolve)) {
-			// 播放器大多在切歌后才异步去取歌词，首次解析可能落空。
-			// 这里在歌词为空时持续重试，避免整首歌都卡在“歌手 - 歌名”。
+			currentLyrics = nil
+			lastResolve = time.Time{}
+			songStartedAt = time.Now()
+		}
+
+		if currentLyrics == nil {
+			if !shouldWaitForPlayerLyrics(metadata, time.Since(songStartedAt)) {
+				if lastResolve.IsZero() || lyricsNeedRefresh(currentLyrics, metadata, time.Since(lastResolve)) {
+					// 播放器大多在切歌后才异步去取歌词，首次解析可能落空。
+					// 这里在歌词为空时持续重试，避免整首歌都卡在“歌手 - 歌名”。
+					currentLyrics = resolveLyrics(metadata)
+					lastResolve = time.Now()
+				}
+			}
+		} else if shouldUpgradeLyrics(currentLyrics, metadata) {
+			// 先用了外部歌词源，之后播放器才拿到自己的歌词。切回播放器歌词，
+			// 避免同一首歌的歌词与 SPlayer 显示的不一致。
 			currentLyrics = resolveLyrics(metadata)
 			lastResolve = time.Now()
 		}
@@ -219,6 +232,27 @@ func renderWaybar(out WaybarOutput) string {
 // lyricRetryInterval 歌词解析失败后的重试间隔
 const lyricRetryInterval = 5 * time.Second
 
+// lyricAPIGracePeriod 切歌后等待播放器 API 歌词的时间。
+// 播放器的歌词通常晚于播放状态就绪，立即回退到外部源会导致歌词与播放器不一致。
+const lyricAPIGracePeriod = 2 * time.Second
+
+func hasPlayerLyrics(metadata *PlayerMetadata) bool {
+	return metadata != nil && metadata.Lyrics != nil && len(metadata.Lyrics.Original) > 0
+}
+
+// shouldWaitForPlayerLyrics 判断是否还应等待播放器自带歌词，暂时不要回退到外部源。
+func shouldWaitForPlayerLyrics(metadata *PlayerMetadata, songElapsed time.Duration) bool {
+	if appConfig.Mode != "splayer-next" || hasPlayerLyrics(metadata) {
+		return false
+	}
+	return songElapsed < lyricAPIGracePeriod
+}
+
+// shouldUpgradeLyrics 判断是否应从外部歌词源切换到播放器自带歌词。
+func shouldUpgradeLyrics(current *ParsedLyrics, metadata *PlayerMetadata) bool {
+	return current != nil && current.Source != lyricsSourceAPI && hasPlayerLyrics(metadata)
+}
+
 // lyricsNeedRefresh 判断是否需要在同一首歌内重新解析歌词
 func lyricsNeedRefresh(current *ParsedLyrics, metadata *PlayerMetadata, sinceLast time.Duration) bool {
 	if current != nil {
@@ -248,6 +282,14 @@ func lookupLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 		}
 		return metadata.Lyrics
 	}
+
+	// 旧版 SPlayer 的 mpris:trackid 不一定包含网易云 ID，优先使用其 ControlAPI。
+	if appConfig.Mode == "splayer" && appConfig.SPlayer.SongIDMode != "search" {
+		if id := getSPlayerSongID(); id != "" {
+			metadata.TrackID = id
+		}
+	}
+
 	var songID string
 
 	if appConfig.SPlayer.SongIDMode != "search" && metadata.TrackID != "" {
@@ -256,6 +298,9 @@ func lookupLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 		if metadata.Player != "splayer-next" || metadata.Source == "" || metadata.Source == "netease" {
 			songID = extractTrackID(metadata.TrackID)
 		}
+	}
+	if songID == "0" {
+		songID = ""
 	}
 
 	if songID == "" {

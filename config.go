@@ -18,10 +18,11 @@ type AppConfig struct {
 }
 
 type SPlayerConfig struct {
-	Address    string           `yaml:"address"`
-	Port       int              `yaml:"port"`
-	SongIDMode string           `yaml:"song_id_mode"`
-	API        SPlayerAPIConfig `yaml:"api"`
+	Address     string           `yaml:"address"`
+	Port        int              `yaml:"port"`
+	ControlPort int              `yaml:"control_port"`
+	SongIDMode  string           `yaml:"song_id_mode"`
+	API         SPlayerAPIConfig `yaml:"api"`
 }
 
 type SPlayerAPIConfig struct {
@@ -35,9 +36,10 @@ func defaultConfig() AppConfig {
 	return AppConfig{
 		Mode: "mpris",
 		SPlayer: SPlayerConfig{
-			Address:    "127.0.0.1",
-			Port:       14558,
-			SongIDMode: "auto",
+			Address:     "127.0.0.1",
+			Port:        14558,
+			ControlPort: 25884,
+			SongIDMode:  "auto",
 		},
 	}
 }
@@ -108,6 +110,9 @@ func loadConfig() (AppConfig, error) {
 	}
 	if config.SPlayer.Port == 0 {
 		config.SPlayer.Port = 14558
+	}
+	if config.SPlayer.ControlPort <= 0 {
+		config.SPlayer.ControlPort = 25884
 	}
 	if config.SPlayer.SongIDMode == "" {
 		config.SPlayer.SongIDMode = "auto"
