@@ -1,6 +1,6 @@
 pkgbase = waybar-lyrics-git
 	pkgdesc = Waybar synchronized lyrics from MPRIS, SPlayer, and SPlayer-Next
-	pkgver = r32.3953ad6
+	pkgver = r34.91ae88f
 	pkgrel = 1
 	url = https://github.com/kndxhz/waybar-lyrics
 	arch = x86_64
