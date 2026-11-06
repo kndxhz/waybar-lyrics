@@ -250,6 +250,10 @@ const lyricAPIGracePeriod = 2 * time.Second
 // SPlayer 可能在切歌后继续请求质量更高、优先级更高的歌词，翻译等字段会随之变化。
 const lyricAPIUpdateDelay = 5 * time.Second
 
+// lyricAPINetworkLatency SPlayer-Next 的播放位置经 HTTP API 获取，返回时会比实际播放
+// 落后一小段网络延迟。显示歌词时提前该时长，让歌词与实际播放对齐。
+const lyricAPINetworkLatency = 100 * time.Millisecond
+
 func hasPlayerLyrics(metadata *PlayerMetadata) bool {
 	return metadata != nil && metadata.Lyrics != nil && len(metadata.Lyrics.Original) > 0
 }
@@ -725,6 +729,10 @@ func buildCurrentLyricText(metadata *PlayerMetadata, lyrics *ParsedLyrics) strin
 	}
 
 	positionMs := metadata.Position / 1000
+	if appConfig.Mode == "splayer-next" {
+		// API 播放位置存在网络延迟，提前 100ms 抵消，避免歌词慢半拍。
+		positionMs += int64(lyricAPINetworkLatency / time.Millisecond)
+	}
 	idx := currentLineIndex(lyrics.Original, positionMs)
 
 	original := ""

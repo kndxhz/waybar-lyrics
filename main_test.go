@@ -235,6 +235,28 @@ func TestBuildCurrentLyricTextTranslationOnlySource(t *testing.T) {
 	}
 }
 
+func TestBuildCurrentLyricTextSPlayerNextLeadsByLatency(t *testing.T) {
+	oldConfig := appConfig
+	appConfig = defaultConfig()
+	t.Cleanup(func() { appConfig = oldConfig })
+
+	lyrics := &ParsedLyrics{
+		Original: []TimedLyricLine{{TimeMs: 0, Text: "a"}, {TimeMs: 1000, Text: "b"}},
+	}
+	// 900ms 时原本还没到第二行；SPlayer-Next 提前 100ms 后应显示第二行。
+	metadata := &PlayerMetadata{Position: 900 * 1000}
+
+	appConfig.Mode = "mpris"
+	if got := buildCurrentLyricText(metadata, lyrics); got != "a" {
+		t.Errorf("mpris 模式不应提前歌词，got %q", got)
+	}
+
+	appConfig.Mode = "splayer-next"
+	if got := buildCurrentLyricText(metadata, lyrics); got != "b" {
+		t.Errorf("splayer-next 模式应提前 100ms，got %q", got)
+	}
+}
+
 func TestLyricsNeedRefresh(t *testing.T) {
 	lyrics := &ParsedLyrics{Original: []TimedLyricLine{{TimeMs: 0, Text: "x"}}}
 	tests := []struct {
