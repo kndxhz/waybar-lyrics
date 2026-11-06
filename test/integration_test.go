@@ -29,7 +29,7 @@ func TestMainLoggingDoesNotPolluteStdout(t *testing.T) {
 	defer server.Close()
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "test-binary")
-	build := exec.Command("go", "build", "-o", binary, ".")
+	build := exec.Command("go", "build", "-o", binary, "..")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v: %s", err, output)
 	}

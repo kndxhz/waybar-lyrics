@@ -108,6 +108,9 @@ func loadConfig() (AppConfig, error) {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return defaultConfig(), fmt.Errorf("解析配置文件失败：%w", err)
 	}
+	if err := completeConfigFile(path, data); err != nil {
+		return defaultConfig(), err
+	}
 	config.Mode = strings.ToLower(strings.TrimSpace(config.Mode))
 	if config.Mode == "" {
 		config.Mode = "mpris"
@@ -131,6 +134,100 @@ func loadConfig() (AppConfig, error) {
 		config.SPlayer.SongIDMode = "auto"
 	}
 	return config, nil
+}
+
+// completeConfigFile adds missing defaults without replacing existing YAML nodes.
+func completeConfigFile(path string, data []byte) error {
+	var document, defaults yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return fmt.Errorf("解析配置文件失败：%w", err)
+	}
+	defaultData, err := yaml.Marshal(defaultConfig())
+	if err != nil {
+		return fmt.Errorf("生成默认配置失败：%w", err)
+	}
+	if err := yaml.Unmarshal(defaultData, &defaults); err != nil {
+		return fmt.Errorf("解析默认配置失败：%w", err)
+	}
+	empty := len(document.Content) == 0
+	if empty {
+		document = defaults
+	} else if document.Content[0].Kind != yaml.MappingNode {
+		// Explicit null and other existing values are not missing keys.
+		return nil
+	} else if !mergeConfigDefaults(document.Content[0], defaults.Content[0]) {
+		return nil
+	}
+	updated, err := yaml.Marshal(&document)
+	if err != nil {
+		return fmt.Errorf("生成补全配置失败：%w", err)
+	}
+	// yaml.v3 does not retain comments in a document without a value.
+	if empty && len(strings.TrimSpace(string(data))) > 0 {
+		updated = append(append(append([]byte{}, data...), '\n'), updated...)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("确定配置文件路径失败：%w", err)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return fmt.Errorf("读取配置文件权限失败：%w", err)
+	}
+	file, err := os.CreateTemp(filepath.Dir(resolved), ".waybar-lyrics-*.tmp")
+	if err != nil {
+		return fmt.Errorf("创建临时配置文件失败：%w", err)
+	}
+	name := file.Name()
+	defer os.Remove(name)
+	mode := info.Mode() & (os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+	if err = file.Chmod(mode); err == nil {
+		_, err = file.Write(updated)
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return fmt.Errorf("写入补全配置失败：%w", err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("关闭补全配置失败：%w", closeErr)
+	}
+	if err = os.Rename(name, resolved); err != nil {
+		return fmt.Errorf("替换配置文件失败：%w", err)
+	}
+	return nil
+}
+
+func mergeConfigDefaults(existing, defaults *yaml.Node) bool {
+	if existing.Kind != yaml.MappingNode || defaults.Kind != yaml.MappingNode {
+		return false
+	}
+	// Decode merged mappings too, so YAML merge keys do not get overridden.
+	var effective map[string]interface{}
+	if err := existing.Decode(&effective); err != nil {
+		return false
+	}
+	changed := false
+	for i := 0; i < len(defaults.Content); i += 2 {
+		key, value := defaults.Content[i], defaults.Content[i+1]
+		found := false
+		for j := 0; j < len(existing.Content); j += 2 {
+			if existing.Content[j].Value == key.Value {
+				found = true
+				if mergeConfigDefaults(existing.Content[j+1], value) {
+					changed = true
+				}
+				break
+			}
+		}
+		if !found {
+			if _, inherited := effective[key.Value]; inherited {
+				continue
+			}
+			existing.Content = append(existing.Content, key, value)
+			changed = true
+		}
+	}
+	return changed
 }
 
 func parseCLI(args []string, stdout io.Writer) (string, error) {

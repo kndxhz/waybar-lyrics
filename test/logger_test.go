@@ -138,7 +138,7 @@ func TestLegacyLogConfig(t *testing.T) {
 		t.Fatalf("log defaults: %+v", config.Log)
 	}
 	data, err := os.ReadFile(path)
-	if err != nil || !bytes.Equal(data, original) {
-		t.Fatalf("legacy config modified: %q %v", data, err)
+	if err != nil || !bytes.Contains(data, []byte("level: INFO")) || !bytes.Contains(data, []byte("port: 15558")) {
+		t.Fatalf("legacy config not upgraded correctly: %q %v", data, err)
 	}
 }
