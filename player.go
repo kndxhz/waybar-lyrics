@@ -79,11 +79,6 @@ func splayerBaseURL() string {
 	return buildSPlayerURL(appConfig.SPlayer.Port, "/api")
 }
 
-// splayerControlBaseURL 旧版 SPlayer 的本地 AppServer，用于读取当前歌曲 ID。
-func splayerControlBaseURL() string {
-	return buildSPlayerURL(appConfig.SPlayer.ControlPort, "/api/control")
-}
-
 func fetchJSONAt(baseURL, path string, target any) bool {
 	if baseURL == "" {
 		return false
@@ -103,10 +98,6 @@ func fetchJSONAt(baseURL, path string, target any) bool {
 
 func fetchJSON(path string, target any) bool {
 	return fetchJSONAt(splayerBaseURL(), path, target)
-}
-
-func fetchSPlayerControlJSON(path string, target any) bool {
-	return fetchJSONAt(splayerControlBaseURL(), path, target)
 }
 
 func getSPlayerNextMetadata() *PlayerMetadata {
@@ -214,53 +205,6 @@ func parseSPlayerNextLyrics(data []byte) *ParsedLyrics {
 		return nil
 	}
 	return result
-}
-
-// getSPlayerSongID 通过旧版 SPlayer 的 ControlAPI 读取当前歌曲 ID。
-// 旧版 SPlayer 由 Electron 暴露 MPRIS，mpris:trackid 不一定是网易云歌曲 ID，
-// 因此歌词解析前优先使用该接口提供的 ID。
-func getSPlayerSongID() string {
-	var raw json.RawMessage
-	if !fetchSPlayerControlJSON("/song-info", &raw) {
-		return ""
-	}
-	return parseSPlayerSongID(raw)
-}
-
-// parseSPlayerSongID 解析旧版 SPlayer /api/control/song-info 的返回结构。
-// 该接口返回 {code, message, data}，data 是 playSong 对象，id 可能是数字或字符串。
-func parseSPlayerSongID(data []byte) string {
-	var envelope struct {
-		Code int             `json:"code"`
-		Data json.RawMessage `json:"data"`
-	}
-	if json.Unmarshal(data, &envelope) == nil && len(envelope.Data) > 0 && string(envelope.Data) != "null" {
-		if envelope.Code != 0 && envelope.Code != http.StatusOK {
-			return ""
-		}
-		data = envelope.Data
-	}
-
-	var info struct {
-		ID   json.RawMessage `json:"id"`
-		Path string          `json:"path"`
-	}
-	if json.Unmarshal(data, &info) != nil {
-		return ""
-	}
-	// 本地歌曲的 id 不是网易云 ID，不能拿它请求网易云歌词。
-	if strings.TrimSpace(info.Path) != "" {
-		return ""
-	}
-	id := strings.Trim(strings.TrimSpace(string(info.ID)), `"`)
-	if id == "" || id == "null" {
-		return ""
-	}
-	number, err := strconv.ParseInt(id, 10, 64)
-	if err != nil || number <= 0 {
-		return ""
-	}
-	return strconv.FormatInt(number, 10)
 }
 
 func extractTrackID(value string) string {

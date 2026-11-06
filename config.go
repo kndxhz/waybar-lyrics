@@ -25,10 +25,9 @@ type LogConfig struct {
 }
 
 type SPlayerConfig struct {
-	Address     string `yaml:"address"`
-	Port        int    `yaml:"port"`
-	ControlPort int    `yaml:"control_port"`
-	SongIDMode  string `yaml:"song_id_mode"`
+	Address    string `yaml:"address"`
+	Port       int    `yaml:"port"`
+	SongIDMode string `yaml:"song_id_mode"`
 	// LatencyMS SPlayer-Next 播放进度经 HTTP API 返回时的网络延迟补偿（毫秒）。
 	LatencyMS int              `yaml:"latency_ms"`
 	API       SPlayerAPIConfig `yaml:"api,omitempty"`
@@ -49,11 +48,10 @@ func defaultConfig() AppConfig {
 		Mode: "mpris",
 		Log:  LogConfig{Path: "/tmp/waybar-lyrics.log", Level: "INFO"},
 		SPlayer: SPlayerConfig{
-			Address:     "127.0.0.1",
-			Port:        14558,
-			ControlPort: 25884,
-			SongIDMode:  "auto",
-			LatencyMS:   defaultLyricLatencyMS,
+			Address:    "127.0.0.1",
+			Port:       14558,
+			SongIDMode: "auto",
+			LatencyMS:  defaultLyricLatencyMS,
 		},
 	}
 }
@@ -128,9 +126,6 @@ func loadConfig() (AppConfig, error) {
 	if config.SPlayer.Port == 0 {
 		config.SPlayer.Port = 14558
 	}
-	if config.SPlayer.ControlPort <= 0 {
-		config.SPlayer.ControlPort = 25884
-	}
 	if config.SPlayer.SongIDMode == "" {
 		config.SPlayer.SongIDMode = "auto"
 	}
@@ -160,6 +155,9 @@ func completeConfigFile(path string, data []byte) error {
 		migrated, err := migrateLegacyAPI(document.Content[0])
 		if err != nil {
 			return err
+		}
+		if removeObsoleteSPlayerFields(document.Content[0]) {
+			migrated = true
 		}
 		if mergeConfigDefaults(document.Content[0], defaults.Content[0]) {
 			migrated = true
@@ -247,6 +245,20 @@ func migrateLegacyAPI(root *yaml.Node) (bool, error) {
 	}
 	splayer.Content = append(splayer.Content[:apiIndex], splayer.Content[apiIndex+2:]...)
 	return true, nil
+}
+
+// removeObsoleteSPlayerFields 删除已不再使用的配置项，避免旧配置残留造成误解。
+func removeObsoleteSPlayerFields(root *yaml.Node) bool {
+	splayer, _ := mappingEntry(root, "splayer")
+	if splayer == nil || splayer.Kind != yaml.MappingNode {
+		return false
+	}
+	_, controlPortIndex := mappingEntry(splayer, "control_port")
+	if controlPortIndex < 0 {
+		return false
+	}
+	splayer.Content = append(splayer.Content[:controlPortIndex], splayer.Content[controlPortIndex+2:]...)
+	return true
 }
 
 // mappingEntry 返回映射中指定键的值节点及其在 Content 中的下标。

@@ -366,12 +366,10 @@ func TestShouldRefreshAPILyrics(t *testing.T) {
 	}
 }
 
-func TestSPlayerModeUsesControlAPISongID(t *testing.T) {
+func TestSPlayerModeUsesMPRISTrackID(t *testing.T) {
 	searchCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
-		case "/api/control/song-info":
-			_, _ = writer.Write([]byte(`{"code":200,"message":"ok","data":{"id":2694839533}}`))
 		case "/2694839533.ttml":
 			_, _ = writer.Write([]byte(`<tt><body><p begin="1s"><span begin="1s" end="1.5s">来自 TTML</span></p></body></tt>`))
 		case "/api/search/get/web":
@@ -390,25 +388,59 @@ func TestSPlayerModeUsesControlAPISongID(t *testing.T) {
 	oldConfig := appConfig
 	appConfig = defaultConfig()
 	appConfig.Mode = "splayer"
-	appConfig.SPlayer.Address = server.URL
-	appConfig.SPlayer.ControlPort = 0
 	t.Cleanup(func() { appConfig = oldConfig })
 
 	metadata := &PlayerMetadata{
 		Player:  "splayer",
-		TrackID: "org.mpris.MediaPlayer2.splayer/track/0",
+		TrackID: "org.mpris.MediaPlayer2.splayer/track/2694839533",
 		Title:   "歌",
 		Artist:  "手",
 	}
 	lyrics := resolveLyrics(metadata)
 	if lyrics == nil || len(lyrics.Original) != 1 || lyrics.Original[0].Text != "来自 TTML" {
-		t.Fatalf("未使用 ControlAPI 歌曲 ID 解析歌词: %#v", lyrics)
+		t.Fatalf("未使用 MPRIS 歌曲 ID 解析歌词: %#v", lyrics)
 	}
 	if lyrics.Source != lyricsSourceTTML {
 		t.Fatalf("歌词来源错误: %q", lyrics.Source)
 	}
 	if searchCalled {
-		t.Fatal("ControlAPI 提供 ID 后不应再调用搜索接口")
+		t.Fatal("MPRIS 提供 ID 后不应再调用搜索接口")
+	}
+}
+
+func TestMPRISModeSearchesSongID(t *testing.T) {
+	searchCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/search/get/web":
+			searchCalled = true
+			_, _ = writer.Write([]byte(`{"code":200,"result":{"songs":[{"id":2694839533}]}}`))
+		case "/2694839533.ttml":
+			writer.WriteHeader(http.StatusNotFound)
+		case "/api/song/lyric":
+			_, _ = writer.Write([]byte(`{"lrc":{"lyric":"[00:00.00]搜索得到"},"tlyric":{"lyric":""},"code":200}`))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	restoreTTML, restore163 := base_ttml, base_163
+	base_ttml, base_163 = server.URL, server.URL
+	t.Cleanup(func() { base_ttml, base_163 = restoreTTML, restore163 })
+
+	oldConfig := appConfig
+	appConfig = defaultConfig()
+	appConfig.Mode = "mpris"
+	t.Cleanup(func() { appConfig = oldConfig })
+
+	// 普通 MPRIS 的 trackid 是播放器内部路径，末尾数字不能当作歌曲 ID。
+	lyrics := resolveLyrics(&PlayerMetadata{Player: "vlc", TrackID: "/org/mpris/MediaPlayer2/TrackList/2", Title: "歌", Artist: "手"})
+	if !searchCalled {
+		t.Fatal("普通 MPRIS 应调用搜索接口获取歌曲 ID")
+	}
+	if lyrics == nil || len(lyrics.Original) != 1 || lyrics.Original[0].Text != "搜索得到" {
+		t.Fatalf("未按搜索结果解析歌词: %#v", lyrics)
 	}
 }
 

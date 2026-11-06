@@ -330,30 +330,9 @@ func lookupLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 		return metadata.Lyrics
 	}
 
-	// 旧版 SPlayer 的 mpris:trackid 不一定包含网易云 ID，优先使用其 ControlAPI。
-	if appConfig.Mode == "splayer" && appConfig.SPlayer.SongIDMode != "search" {
-		if id := getSPlayerSongID(); id != "" {
-			metadata.TrackID = id
-		}
-	}
-
-	var songID string
-
-	if appConfig.SPlayer.SongIDMode != "search" && metadata.TrackID != "" {
-		// splayer-next 的 TraceID 是裸数字（如网易云 2694839533），
-		// 非网易云来源则不能直接当作网易云 ID 使用，退回搜索。
-		if metadata.Player != "splayer-next" || metadata.Source == "" || metadata.Source == "netease" {
-			songID = extractTrackID(metadata.TrackID)
-		}
-	}
-	if songID == "0" {
-		songID = ""
-	}
-
-	if songID == "" {
-		songID = searchSong(metadata.Title, metadata.Artist)
-	}
-
+	// 旧版 SPlayer 与 SPlayer-Next 会直接提供歌曲 ID，普通 MPRIS 播放器
+	// 只有标题和歌手，需要调用网易云搜索接口。
+	songID := resolveSongID(metadata)
 	if songID != "" {
 		if ttml := getTTMLLyrics(songID); ttml != nil {
 			return ttml
@@ -392,6 +371,21 @@ func lookupLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 	}
 
 	return nil
+}
+
+// resolveSongID 选择查询歌词用的网易云歌曲 ID。普通 MPRIS 播放器的
+// mpris:trackid 只是播放器内部路径，不能当作歌曲 ID，必须按歌名和歌手搜索。
+func resolveSongID(metadata *PlayerMetadata) string {
+	if appConfig.SPlayer.SongIDMode != "search" {
+		// SPlayer-Next 的 ID 只有来源为网易云时才能用于查询网易云歌词。
+		if metadata.Player == "splayer" ||
+			(metadata.Player == "splayer-next" && (metadata.Source == "" || metadata.Source == "netease")) {
+			if id := extractTrackID(metadata.TrackID); id != "" && id != "0" {
+				return id
+			}
+		}
+	}
+	return searchSong(metadata.Title, metadata.Artist)
 }
 
 type ttmlContent struct {

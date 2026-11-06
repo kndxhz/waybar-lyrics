@@ -37,13 +37,13 @@ func TestConfigMigrationPreservesValuesAndComments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []string{"# heading", "# mode comment", "# zero comment", "# unknown comment", "custom: yes", "latency_ms: 0", "control_port:", "song_id_mode:", "log:", "level:", "address: 192.0.2.1"} {
+	for _, s := range []string{"# heading", "# mode comment", "# zero comment", "# unknown comment", "custom: yes", "latency_ms: 0", "song_id_mode:", "log:", "level:", "address: 192.0.2.1"} {
 		if !strings.Contains(string(data), s) {
 			t.Errorf("missing %q in %s", s, data)
 		}
 	}
-	if strings.Contains(string(data), "api:") {
-		t.Errorf("legacy api block not removed: %s", data)
+	if strings.Contains(string(data), "api:") || strings.Contains(string(data), "control_port") {
+		t.Errorf("legacy fields not removed: %s", data)
 	}
 	var parsed map[string]interface{}
 	if err := yaml.Unmarshal(data, &parsed); err != nil {
@@ -159,6 +159,20 @@ func TestConfigMigrationRemovesLegacyAPIFields(t *testing.T) {
 				t.Fatal("second load rewrote migrated configuration")
 			}
 		})
+	}
+}
+
+func TestConfigMigrationRemovesControlPort(t *testing.T) {
+	path := migrationFile(t, "mode: splayer\nsplayer:\n  control_port: 26000 # old setting\n")
+	if _, err := loadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "control_port") {
+		t.Fatalf("obsolete control_port not removed: %s", data)
 	}
 }
 
