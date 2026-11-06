@@ -255,6 +255,20 @@ func TestBuildCurrentLyricTextSPlayerNextLeadsByLatency(t *testing.T) {
 	if got := buildCurrentLyricText(metadata, lyrics); got != "b" {
 		t.Errorf("splayer-next 模式应提前 100ms，got %q", got)
 	}
+
+	// 自定义延迟生效
+	appConfig.SPlayer.LatencyMS = 200
+	metadata.Position = 800 * 1000
+	if got := buildCurrentLyricText(metadata, lyrics); got != "b" {
+		t.Errorf("latency_ms=200 时应提前 200ms，got %q", got)
+	}
+
+	// 0 表示关闭补偿
+	appConfig.SPlayer.LatencyMS = 0
+	metadata.Position = 900 * 1000
+	if got := buildCurrentLyricText(metadata, lyrics); got != "a" {
+		t.Errorf("latency_ms=0 时不应提前歌词，got %q", got)
+	}
 }
 
 func TestLyricsNeedRefresh(t *testing.T) {

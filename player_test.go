@@ -110,6 +110,56 @@ func TestLoadConfig(t *testing.T) {
 	if config.Mode != "splayer-next" || config.SPlayer.Port != 15558 || config.SPlayer.ControlPort != 26000 || config.SPlayer.SongIDMode != "search" {
 		t.Fatalf("配置解析异常: %#v", config)
 	}
+	// 旧配置没有 latency_ms 字段时，应自动使用默认值 100ms。
+	if config.SPlayer.LatencyMS != defaultLyricLatencyMS {
+		t.Fatalf("旧配置升级后 latency_ms = %d, want %d", config.SPlayer.LatencyMS, defaultLyricLatencyMS)
+	}
+}
+
+func TestLoadConfigLatency(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want int
+	}{
+		{"自定义延迟", "mode: splayer-next\nsplayer:\n  latency_ms: 250\n", 250},
+		{"显式关闭补偿", "mode: splayer-next\nsplayer:\n  latency_ms: 0\n", 0},
+		{"缺少字段使用默认值", "mode: splayer-next\n", defaultLyricLatencyMS},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configDir := filepath.Join(dir, "waybar-lyrics")
+			if err := os.MkdirAll(configDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(configDir, "waybar-lyrics.yaml"), []byte(test.data), 0644); err != nil {
+				t.Fatal(err)
+			}
+			old := os.Getenv("XDG_CONFIG_HOME")
+			if err := os.Setenv("XDG_CONFIG_HOME", dir); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Setenv("XDG_CONFIG_HOME", old) })
+
+			config, err := loadConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.SPlayer.LatencyMS != test.want {
+				t.Fatalf("latency_ms = %d, want %d", config.SPlayer.LatencyMS, test.want)
+			}
+		})
+	}
+}
+
+func TestValidateConfigRejectsNegativeLatency(t *testing.T) {
+	config := defaultConfig()
+	config.Mode = "splayer-next"
+	config.SPlayer.LatencyMS = -1
+	if err := validateConfig(config); err == nil {
+		t.Fatal("负数 latency_ms 应返回错误")
+	}
 }
 
 func TestLoadConfigNestedAPI(t *testing.T) {

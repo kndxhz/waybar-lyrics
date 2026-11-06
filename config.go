@@ -18,17 +18,22 @@ type AppConfig struct {
 }
 
 type SPlayerConfig struct {
-	Address     string           `yaml:"address"`
-	Port        int              `yaml:"port"`
-	ControlPort int              `yaml:"control_port"`
-	SongIDMode  string           `yaml:"song_id_mode"`
-	API         SPlayerAPIConfig `yaml:"api"`
+	Address     string `yaml:"address"`
+	Port        int    `yaml:"port"`
+	ControlPort int    `yaml:"control_port"`
+	SongIDMode  string `yaml:"song_id_mode"`
+	// LatencyMS SPlayer-Next 播放进度经 HTTP API 返回时的网络延迟补偿（毫秒）。
+	LatencyMS int              `yaml:"latency_ms"`
+	API       SPlayerAPIConfig `yaml:"api"`
 }
 
 type SPlayerAPIConfig struct {
 	Address string `yaml:"address"`
 	Port    int    `yaml:"port"`
 }
+
+// defaultLyricLatencyMS 歌词默认提前量，用于抵消 SPlayer-Next API 的网络延迟。
+const defaultLyricLatencyMS = 100
 
 var appConfig = defaultConfig()
 
@@ -40,6 +45,7 @@ func defaultConfig() AppConfig {
 			Port:        14558,
 			ControlPort: 25884,
 			SongIDMode:  "auto",
+			LatencyMS:   defaultLyricLatencyMS,
 		},
 	}
 }
@@ -152,8 +158,11 @@ func applyModeOverride(config AppConfig, mode string) (AppConfig, error) {
 func validateConfig(config AppConfig) error {
 	switch config.Mode {
 	case "mpris", "splayer", "splayer-next":
-		return nil
 	default:
 		return errors.New("mode 必须是 mpris、splayer 或 splayer-next")
 	}
+	if config.SPlayer.LatencyMS < 0 {
+		return errors.New("splayer.latency_ms 不能为负数")
+	}
+	return nil
 }
