@@ -62,6 +62,10 @@ waybar-lyrics --help
 # 可选值：mpris、splayer、splayer-next
 mode: splayer-next
 
+log:
+  path: /tmp/waybar-lyrics.log
+  level: INFO
+
 splayer:
   # SPlayer-Next 外部 API 地址和端口
   address: 127.0.0.1
@@ -73,6 +77,8 @@ splayer:
   # SPlayer-Next 歌词提前量（毫秒），用于抵消 API 网络延迟；默认 100，设为 0 关闭
   latency_ms: 100
 ```
+
+日志默认写入 `/tmp/waybar-lyrics.log`，每次正常启动时清空。可通过 `log.path` 指定文件路径（父目录须已存在），通过 `log.level` 设置 `DEBUG`、`INFO`（默认）、`WARN` 或 `ERROR`；仅 `DEBUG` 记录完整歌词。日志不写入标准输出。日志文件无法打开时程序会向标准错误报告并退出。旧配置缺少日志字段时自动使用默认值，不会改写已有配置文件。
 
 ### `mpris`：普通 MPRIS 播放器
 

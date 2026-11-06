@@ -15,6 +15,12 @@ import (
 type AppConfig struct {
 	Mode    string        `yaml:"mode"`
 	SPlayer SPlayerConfig `yaml:"splayer"`
+	Log     LogConfig     `yaml:"log"`
+}
+
+type LogConfig struct {
+	Path  string `yaml:"path"`
+	Level string `yaml:"level"`
 }
 
 type SPlayerConfig struct {
@@ -40,6 +46,7 @@ var appConfig = defaultConfig()
 func defaultConfig() AppConfig {
 	return AppConfig{
 		Mode: "mpris",
+		Log:  LogConfig{Path: "/tmp/waybar-lyrics.log", Level: "INFO"},
 		SPlayer: SPlayerConfig{
 			Address:     "127.0.0.1",
 			Port:        14558,
@@ -163,6 +170,14 @@ func validateConfig(config AppConfig) error {
 	}
 	if config.SPlayer.LatencyMS < 0 {
 		return errors.New("splayer.latency_ms 不能为负数")
+	}
+	if strings.TrimSpace(config.Log.Path) == "" {
+		return errors.New("log.path 不能为空")
+	}
+	switch strings.ToUpper(strings.TrimSpace(config.Log.Level)) {
+	case "DEBUG", "INFO", "WARN", "ERROR":
+	default:
+		return errors.New("log.level 必须是 DEBUG、INFO、WARN 或 ERROR")
 	}
 	return nil
 }

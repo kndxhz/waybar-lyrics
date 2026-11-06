@@ -128,6 +128,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "配置错误：", err)
 		os.Exit(1)
 	}
+	logFile, err := openLogFile(appConfig.Log.Path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "打开日志文件失败：", err)
+		os.Exit(1)
+	}
+	defer logFile.Close()
+	configureLogLevel(appConfig.Log.Level)
+	logEvent("INFO", "程序启动: mode=%s latency_ms=%d", appConfig.Mode, appConfig.SPlayer.LatencyMS)
 
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
@@ -138,10 +146,16 @@ func main() {
 	lastResolve := time.Time{}
 	songStartedAt := time.Now()
 	apiLyricsRefreshed := false
+	playerUnavailable := false
+	lyricsFailureLogged := false
 
 	for {
 		metadata := getPlayerMetadata()
 		if metadata == nil {
+			if !playerUnavailable {
+				logEvent("WARN", "播放器不可用或没有播放中的曲目")
+				playerUnavailable = true
+			}
 			empty := renderWaybar(WaybarOutput{Text: "", Tooltip: "", Class: "stopped"})
 			if empty != lastRendered {
 				fmt.Println(empty)
@@ -152,13 +166,19 @@ func main() {
 			continue
 		}
 
+		if playerUnavailable {
+			logEvent("INFO", "播放器已恢复")
+			playerUnavailable = false
+		}
 		songKey := buildSongKey(metadata)
 		if songKey != lastSongKey {
+			logEvent("INFO", "曲目已切换: player=%s", metadata.Player)
 			lastSongKey = songKey
 			currentLyrics = nil
 			lastResolve = time.Time{}
 			songStartedAt = time.Now()
 			apiLyricsRefreshed = false
+			lyricsFailureLogged = false
 		}
 
 		if currentLyrics == nil {
@@ -167,6 +187,7 @@ func main() {
 					// 播放器大多在切歌后才异步去取歌词，首次解析可能落空。
 					// 这里在歌词为空时持续重试，避免整首歌都卡在“歌手 - 歌名”。
 					currentLyrics = resolveLyrics(metadata)
+					logLyricsResult("解析歌词", currentLyrics, &lyricsFailureLogged)
 					lastResolve = time.Now()
 					apiLyricsRefreshed = apiLyricsUpdateDue(currentLyrics, time.Since(songStartedAt))
 				}
@@ -175,12 +196,14 @@ func main() {
 			// SPlayer-Next 可能在切歌后继续请求质量更高、优先级更高的歌词，
 			// 5 秒后再读取一次，避免翻译等字段与播放器显示的不一致。
 			currentLyrics = resolveLyrics(metadata)
+			logLyricsResult("刷新 API 歌词", currentLyrics, &lyricsFailureLogged)
 			lastResolve = time.Now()
 			apiLyricsRefreshed = true
 		} else if shouldUpgradeLyrics(currentLyrics, metadata) {
 			// 先用了外部歌词源，之后播放器才拿到自己的歌词。切回播放器歌词，
 			// 避免同一首歌的歌词与 SPlayer 显示的不一致。
 			currentLyrics = resolveLyrics(metadata)
+			logLyricsResult("切换至播放器歌词", currentLyrics, &lyricsFailureLogged)
 			lastResolve = time.Now()
 			apiLyricsRefreshed = apiLyricsUpdateDue(currentLyrics, time.Since(songStartedAt))
 		}
