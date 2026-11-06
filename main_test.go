@@ -303,6 +303,33 @@ func TestShouldUpgradeLyrics(t *testing.T) {
 	}
 }
 
+func TestShouldRefreshAPILyrics(t *testing.T) {
+	apiLyrics := &ParsedLyrics{Original: []TimedLyricLine{{TimeMs: 0, Text: "api"}}}
+	apiMetadata := &PlayerMetadata{Lyrics: apiLyrics}
+	currentAPI := &ParsedLyrics{Original: []TimedLyricLine{{TimeMs: 0, Text: "api"}}, Source: lyricsSourceAPI}
+	currentExternal := &ParsedLyrics{Original: []TimedLyricLine{{TimeMs: 0, Text: "ext"}}, Source: lyricsSourceNCM}
+	tests := []struct {
+		name      string
+		current   *ParsedLyrics
+		metadata  *PlayerMetadata
+		elapsed   time.Duration
+		refreshed bool
+		want      bool
+	}{
+		{"未到 5 秒", currentAPI, apiMetadata, lyricAPIUpdateDelay - time.Millisecond, false, false},
+		{"到达 5 秒", currentAPI, apiMetadata, lyricAPIUpdateDelay, false, true},
+		{"已经刷新过", currentAPI, apiMetadata, lyricAPIUpdateDelay * 2, true, false},
+		{"外部歌词不刷新", currentExternal, apiMetadata, lyricAPIUpdateDelay, false, false},
+		{"API 暂无歌词", currentAPI, &PlayerMetadata{}, lyricAPIUpdateDelay, false, false},
+		{"无当前歌词", nil, apiMetadata, lyricAPIUpdateDelay, false, false},
+	}
+	for _, test := range tests {
+		if got := shouldRefreshAPILyrics(test.current, test.metadata, test.elapsed, test.refreshed); got != test.want {
+			t.Errorf("%s: shouldRefreshAPILyrics() = %t, want %t", test.name, got, test.want)
+		}
+	}
+}
+
 func TestSPlayerModeUsesControlAPISongID(t *testing.T) {
 	searchCalled := false
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

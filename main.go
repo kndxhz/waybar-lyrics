@@ -137,6 +137,7 @@ func main() {
 	var currentLyrics *ParsedLyrics
 	lastResolve := time.Time{}
 	songStartedAt := time.Now()
+	apiLyricsRefreshed := false
 
 	for {
 		metadata := getPlayerMetadata()
@@ -157,6 +158,7 @@ func main() {
 			currentLyrics = nil
 			lastResolve = time.Time{}
 			songStartedAt = time.Now()
+			apiLyricsRefreshed = false
 		}
 
 		if currentLyrics == nil {
@@ -166,13 +168,21 @@ func main() {
 					// 这里在歌词为空时持续重试，避免整首歌都卡在“歌手 - 歌名”。
 					currentLyrics = resolveLyrics(metadata)
 					lastResolve = time.Now()
+					apiLyricsRefreshed = apiLyricsUpdateDue(currentLyrics, time.Since(songStartedAt))
 				}
 			}
+		} else if shouldRefreshAPILyrics(currentLyrics, metadata, time.Since(songStartedAt), apiLyricsRefreshed) {
+			// SPlayer-Next 可能在切歌后继续请求质量更高、优先级更高的歌词，
+			// 5 秒后再读取一次，避免翻译等字段与播放器显示的不一致。
+			currentLyrics = resolveLyrics(metadata)
+			lastResolve = time.Now()
+			apiLyricsRefreshed = true
 		} else if shouldUpgradeLyrics(currentLyrics, metadata) {
 			// 先用了外部歌词源，之后播放器才拿到自己的歌词。切回播放器歌词，
 			// 避免同一首歌的歌词与 SPlayer 显示的不一致。
 			currentLyrics = resolveLyrics(metadata)
 			lastResolve = time.Now()
+			apiLyricsRefreshed = apiLyricsUpdateDue(currentLyrics, time.Since(songStartedAt))
 		}
 
 		text := buildCurrentLyricText(metadata, currentLyrics)
@@ -236,8 +246,22 @@ const lyricRetryInterval = 5 * time.Second
 // 播放器的歌词通常晚于播放状态就绪，立即回退到外部源会导致歌词与播放器不一致。
 const lyricAPIGracePeriod = 2 * time.Second
 
+// lyricAPIUpdateDelay 使用 API 歌词时，切歌后再次读取歌词的延迟。
+// SPlayer 可能在切歌后继续请求质量更高、优先级更高的歌词，翻译等字段会随之变化。
+const lyricAPIUpdateDelay = 5 * time.Second
+
 func hasPlayerLyrics(metadata *PlayerMetadata) bool {
 	return metadata != nil && metadata.Lyrics != nil && len(metadata.Lyrics.Original) > 0
+}
+
+// apiLyricsUpdateDue 判断当前是否已经进入 API 歌词的二次更新窗口。
+func apiLyricsUpdateDue(current *ParsedLyrics, songElapsed time.Duration) bool {
+	return current != nil && current.Source == lyricsSourceAPI && songElapsed >= lyricAPIUpdateDelay
+}
+
+// shouldRefreshAPILyrics 判断是否需要在切歌 5 秒后重新读取播放器 API 歌词。
+func shouldRefreshAPILyrics(current *ParsedLyrics, metadata *PlayerMetadata, songElapsed time.Duration, refreshed bool) bool {
+	return !refreshed && apiLyricsUpdateDue(current, songElapsed) && hasPlayerLyrics(metadata)
 }
 
 // shouldWaitForPlayerLyrics 判断是否还应等待播放器自带歌词，暂时不要回退到外部源。
