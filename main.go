@@ -172,7 +172,7 @@ func main() {
 		}
 		songKey := buildSongKey(metadata)
 		if songKey != lastSongKey {
-			logEvent("INFO", "曲目已切换: player=%s", metadata.Player)
+			logTrackChange(metadata)
 			lastSongKey = songKey
 			currentLyrics = nil
 			lastResolve = time.Time{}

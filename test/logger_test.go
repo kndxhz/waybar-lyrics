@@ -71,6 +71,25 @@ func TestLyricsFailureWarningDeduplication(t *testing.T) {
 	}
 }
 
+func TestLogTrackChangeIncludesSongInfo(t *testing.T) {
+	var output bytes.Buffer
+	appLog.SetOutput(&output)
+	defer func() { appLog.SetOutput(io.Discard); configureLogLevel("INFO") }()
+	configureLogLevel("INFO")
+	logTrackChange(&PlayerMetadata{Player: "splayer-next", Title: "歌名", Artist: "歌手", TrackID: "2694839533"})
+	line := output.String()
+	for _, want := range []string{"[INFO]", "曲目已切换", "player=splayer-next", "歌名=歌名", "歌手=歌手", "歌曲ID=2694839533"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("missing %q in %q", want, line)
+		}
+	}
+	output.Reset()
+	logTrackChange(&PlayerMetadata{Player: "mpris"})
+	if !strings.Contains(output.String(), "歌名=- 歌手=- 歌曲ID=-") {
+		t.Fatalf("unexpected placeholder log: %s", output.String())
+	}
+}
+
 func TestLogRejectsSymlink(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "target")

@@ -41,6 +41,21 @@ func openLogFile(path string) (*os.File, error) {
 	return file, nil
 }
 
+// logTrackChange 记录切歌信息，便于按歌名、歌手和歌曲 ID 定位播放内容。
+func logTrackChange(metadata *PlayerMetadata) {
+	logEvent("INFO", "曲目已切换: player=%s 歌名=%s 歌手=%s 歌曲ID=%s",
+		metadata.Player, logField(metadata.Title), logField(metadata.Artist), logField(metadata.TrackID))
+}
+
+// logField 为空字段提供占位符，避免日志出现连续空格难以阅读。
+func logField(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return value
+}
+
 func logLyricsResult(action string, lyrics *ParsedLyrics, failureLogged *bool) {
 	if lyrics == nil {
 		if !*failureLogged {
