@@ -37,10 +37,13 @@ func TestConfigMigrationPreservesValuesAndComments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []string{"# heading", "# mode comment", "# zero comment", "# unknown comment", "custom: yes", "latency_ms: 0", "control_port:", "song_id_mode:", "log:", "level:", "port: 0"} {
+	for _, s := range []string{"# heading", "# mode comment", "# zero comment", "# unknown comment", "custom: yes", "latency_ms: 0", "control_port:", "song_id_mode:", "log:", "level:", "address: 192.0.2.1"} {
 		if !strings.Contains(string(data), s) {
 			t.Errorf("missing %q in %s", s, data)
 		}
+	}
+	if strings.Contains(string(data), "api:") {
+		t.Errorf("legacy api block not removed: %s", data)
 	}
 	var parsed map[string]interface{}
 	if err := yaml.Unmarshal(data, &parsed); err != nil {
@@ -103,6 +106,88 @@ func TestConfigMigrationInvalidInputUnchanged(t *testing.T) {
 				t.Fatalf("file changed: %s", data)
 			}
 		})
+	}
+}
+
+func TestConfigMigrationRemovesLegacyAPIFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, input, address string
+		port                 int
+	}{
+		{"空字段不覆盖外层", "mode: splayer-next\nsplayer:\n  address: 10.0.0.1\n  port: 15000\n  api:\n    address: \"\"\n    port: 0\n", "10.0.0.1", 15000},
+		{"旧字段覆盖外层", "mode: splayer-next\nsplayer:\n  address: 10.0.0.1\n  port: 15000\n  api:\n    address: 192.0.2.1\n    port: 16666\n", "192.0.2.1", 16666},
+		{"仅旧字段", "mode: splayer-next\nsplayer:\n  api:\n    address: 192.0.2.2\n    port: 17777\n", "192.0.2.2", 17777},
+		{"空 api 空值", "mode: splayer-next\nsplayer:\n  api: null\n", "127.0.0.1", 14558},
+		{"空 api 映射", "mode: splayer-next\nsplayer:\n  api: {}\n", "127.0.0.1", 14558},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := migrationFile(t, tc.input)
+			config, err := loadConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if config.SPlayer.Address != tc.address || config.SPlayer.Port != tc.port {
+				t.Fatalf("config: %+v", config.SPlayer)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "api:") {
+				t.Fatalf("legacy api block not removed: %s", data)
+			}
+			var parsed struct {
+				SPlayer struct {
+					Address string `yaml:"address"`
+					Port    int    `yaml:"port"`
+				} `yaml:"splayer"`
+			}
+			if err := yaml.Unmarshal(data, &parsed); err != nil {
+				t.Fatal(err)
+			}
+			if parsed.SPlayer.Address != tc.address || parsed.SPlayer.Port != tc.port {
+				t.Fatalf("written config mismatch: %+v", parsed.SPlayer)
+			}
+			if _, err := loadConfig(); err != nil {
+				t.Fatal(err)
+			}
+			again, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(data, again) {
+				t.Fatal("second load rewrote migrated configuration")
+			}
+		})
+	}
+}
+
+func TestConfigMigrationKeepsUnknownAPIFields(t *testing.T) {
+	path := migrationFile(t, "mode: splayer-next\nsplayer:\n  api:\n    address: 192.0.2.3\n    extra: keep\n")
+	if _, err := loadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "extra: keep") || !strings.Contains(string(data), "api:") {
+		t.Fatalf("unknown api fields lost: %s", data)
+	}
+}
+
+func TestNewConfigOmitsLegacyAPIFields(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if _, err := loadConfig(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(configPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "api:") {
+		t.Fatalf("new config contains legacy api: %s", data)
 	}
 }
 

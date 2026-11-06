@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -30,7 +31,7 @@ type SPlayerConfig struct {
 	SongIDMode  string `yaml:"song_id_mode"`
 	// LatencyMS SPlayer-Next 播放进度经 HTTP API 返回时的网络延迟补偿（毫秒）。
 	LatencyMS int              `yaml:"latency_ms"`
-	API       SPlayerAPIConfig `yaml:"api"`
+	API       SPlayerAPIConfig `yaml:"api,omitempty"`
 }
 
 type SPlayerAPIConfig struct {
@@ -155,8 +156,17 @@ func completeConfigFile(path string, data []byte) error {
 	} else if document.Content[0].Kind != yaml.MappingNode {
 		// Explicit null and other existing values are not missing keys.
 		return nil
-	} else if !mergeConfigDefaults(document.Content[0], defaults.Content[0]) {
-		return nil
+	} else {
+		migrated, err := migrateLegacyAPI(document.Content[0])
+		if err != nil {
+			return err
+		}
+		if mergeConfigDefaults(document.Content[0], defaults.Content[0]) {
+			migrated = true
+		}
+		if !migrated {
+			return nil
+		}
 	}
 	updated, err := yaml.Marshal(&document)
 	if err != nil {
@@ -195,6 +205,76 @@ func completeConfigFile(path string, data []byte) error {
 		return fmt.Errorf("替换配置文件失败：%w", err)
 	}
 	return nil
+}
+
+// migrateLegacyAPI 将旧版 splayer.api 的地址和端口迁移到外层字段并删除该旧配置项。
+// 若旧配置块含有无法迁移的自定义子项，则保持原样，避免静默丢失用户数据。
+func migrateLegacyAPI(root *yaml.Node) (bool, error) {
+	splayer, _ := mappingEntry(root, "splayer")
+	if splayer == nil || splayer.Kind != yaml.MappingNode {
+		return false, nil
+	}
+	api, apiIndex := mappingEntry(splayer, "api")
+	if api == nil {
+		return false, nil
+	}
+	if api.Kind == yaml.ScalarNode {
+		if api.Tag != "!!null" {
+			return false, errors.New("配置 splayer.api 必须是映射")
+		}
+		splayer.Content = append(splayer.Content[:apiIndex], splayer.Content[apiIndex+2:]...)
+		return true, nil
+	}
+	var fields map[string]interface{}
+	if err := api.Decode(&fields); err != nil {
+		return false, fmt.Errorf("解析旧配置 splayer.api 失败：%w", err)
+	}
+	for key := range fields {
+		if key != "address" && key != "port" {
+			// 未知子项无法安全迁移，保留旧配置块。
+			return false, nil
+		}
+	}
+	var legacy SPlayerAPIConfig
+	if err := api.Decode(&legacy); err != nil {
+		return false, fmt.Errorf("解析旧配置 splayer.api 失败：%w", err)
+	}
+	if legacy.Address != "" {
+		setMappingValue(splayer, "address", "!!str", legacy.Address)
+	}
+	if legacy.Port != 0 {
+		setMappingValue(splayer, "port", "!!int", strconv.Itoa(legacy.Port))
+	}
+	splayer.Content = append(splayer.Content[:apiIndex], splayer.Content[apiIndex+2:]...)
+	return true, nil
+}
+
+// mappingEntry 返回映射中指定键的值节点及其在 Content 中的下标。
+func mappingEntry(mapping *yaml.Node, key string) (*yaml.Node, int) {
+	if mapping.Kind != yaml.MappingNode {
+		return nil, -1
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i+1], i
+		}
+	}
+	return nil, -1
+}
+
+// setMappingValue 覆盖已有键的值，不存在时追加到映射末尾。
+func setMappingValue(mapping *yaml.Node, key, tag, value string) {
+	if node, _ := mappingEntry(mapping, key); node != nil {
+		node.Kind = yaml.ScalarNode
+		node.Tag = tag
+		node.Value = value
+		node.Style = 0
+		return
+	}
+	mapping.Content = append(mapping.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: value},
+	)
 }
 
 func mergeConfigDefaults(existing, defaults *yaml.Node) bool {

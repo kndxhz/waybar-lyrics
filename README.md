@@ -102,16 +102,7 @@ splayer:
   song_id_mode: auto
 ```
 
-地址和端口也支持写在 `splayer.api` 下：
-
-```yaml
-mode: splayer-next
-splayer:
-  song_id_mode: auto
-  api:
-    address: 127.0.0.1
-    port: 14558
-```
+旧配置中的 `splayer.api.address` 和 `splayer.api.port` 会在启动时迁移到 `splayer.address` 和 `splayer.port`，然后移除旧的 `api` 配置。迁移时旧字段的有效值优先，以保持原有连接行为。
 
 ### 歌曲识别与歌词回退
 
