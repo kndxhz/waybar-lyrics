@@ -39,7 +39,7 @@ type SPlayerAPIConfig struct {
 }
 
 // defaultLyricLatencyMS 歌词默认提前量，用于抵消 SPlayer-Next API 的网络延迟。
-const defaultLyricLatencyMS = 100
+const defaultLyricLatencyMS = 200
 
 var appConfig = defaultConfig()
 
