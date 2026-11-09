@@ -526,6 +526,85 @@ func TestResolveLyricsSearchesForNonNeteaseSource(t *testing.T) {
 	}
 }
 
+func TestNCMLyricsFallbackAndTranslation(t *testing.T) {
+	tests := []struct {
+		name, response, source, original, translation string
+		wantLRCLIB                                    bool
+	}{
+		{"empty", `{"lrc":{"lyric":""},"tlyric":{"lyric":""},"code":200}`, lyricsSourceLrcLib, "from lrclib", "", true},
+		{"unparseable", `{"lrc":{"lyric":"no timestamps"},"tlyric":{"lyric":"also invalid"},"code":200}`, lyricsSourceLrcLib, "from lrclib", "", true},
+		{"translation only", `{"lrc":{"lyric":""},"tlyric":{"lyric":"[00:01]翻译"},"code":200}`, lyricsSourceNCM, "", "翻译", false},
+		{"inline translation", `{"lrc":{"lyric":"[00:01]original | 翻译"},"tlyric":{"lyric":""},"code":200}`, lyricsSourceNCM, "original", "翻译", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lrclibCalled := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/12345.ttml":
+					w.WriteHeader(http.StatusNotFound)
+				case "/api/song/lyric":
+					_, _ = w.Write([]byte(tt.response))
+				case "/api/get":
+					lrclibCalled = true
+					_, _ = w.Write([]byte(`{"syncedLyrics":"[00:01]from lrclib"}`))
+				default:
+					t.Errorf("unexpected request: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+			oldTTML, old163, oldLRCLIB, oldConfig := base_ttml, base_163, base_lrclib, appConfig
+			base_ttml, base_163, base_lrclib, appConfig = server.URL, server.URL, server.URL, defaultConfig()
+			t.Cleanup(func() { base_ttml, base_163, base_lrclib, appConfig = oldTTML, old163, oldLRCLIB, oldConfig })
+			lyrics := resolveLyrics(&PlayerMetadata{Player: "splayer", TrackID: "12345", Title: "歌", Artist: "手"})
+			if lyrics == nil || lyrics.Source != tt.source {
+				t.Fatalf("unexpected lyrics: %#v", lyrics)
+			}
+			if (tt.original == "" && len(lyrics.Original) != 0) || (tt.original != "" && (len(lyrics.Original) != 1 || lyrics.Original[0].Text != tt.original)) {
+				t.Errorf("unexpected original: %#v", lyrics.Original)
+			}
+			if (tt.translation == "" && len(lyrics.Translation) != 0) || (tt.translation != "" && (len(lyrics.Translation) != 1 || lyrics.Translation[0].Text != tt.translation)) {
+				t.Errorf("unexpected translation: %#v", lyrics.Translation)
+			}
+			if lrclibCalled != tt.wantLRCLIB {
+				t.Errorf("LRCLIB called = %t, want %t", lrclibCalled, tt.wantLRCLIB)
+			}
+		})
+	}
+}
+
+func TestResolveSongIDMatchesPlayerNames(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/search/get/web" {
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":200,"result":{"songs":[{"id":777}]}}`))
+	}))
+	defer server.Close()
+	old163, oldConfig := base_163, appConfig
+	base_163, appConfig = server.URL, defaultConfig()
+	t.Cleanup(func() { base_163, appConfig = old163, oldConfig })
+	for _, tt := range []struct{ player, source, mode, want string }{
+		{"SPlayer", "", "", "12345"},
+		{"splayer.instance123", "", "", "12345"},
+		{"SPLAYER.instance123", "", "search", "777"},
+		{"vlc.instance123", "", "", "777"},
+		{"splayer-next", "qq", "", "777"},
+		{"splayer-next", "netease", "", "12345"},
+	} {
+		t.Run(tt.player+"/"+tt.source+"/"+tt.mode, func(t *testing.T) {
+			appConfig.SPlayer.SongIDMode = tt.mode
+			got := resolveSongID(&PlayerMetadata{Player: tt.player, Source: tt.source, TrackID: "12345", Title: "歌", Artist: "手"})
+			if got != tt.want {
+				t.Errorf("resolveSongID = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveLyricsTreatsEmptyResultAsFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {

@@ -149,6 +149,8 @@ func main() {
 	defer ticker.Stop()
 
 	lastSongKey := ""
+	lastTrackID := ""
+	var idRetry nextIDRetry
 	lastRendered := ""
 	var currentLyrics *ParsedLyrics
 	lastResolve := time.Time{}
@@ -170,6 +172,8 @@ func main() {
 				lastRendered = empty
 			}
 			lastSongKey = ""
+			lastTrackID = ""
+			idRetry = nextIDRetry{}
 			<-ticker.C
 			continue
 		}
@@ -179,7 +183,13 @@ func main() {
 			playerUnavailable = false
 		}
 		songKey := buildSongKey(metadata)
-		if songKey != lastSongKey {
+		trackID := metadata.TrackID
+		if trackID == "0" {
+			trackID = ""
+		}
+		trackChanged := metadata.Player == "splayer-next" && lastTrackID != "" && trackID != "" && lastTrackID != trackID
+		idArrived := metadata.Player == "splayer-next" && lastTrackID == "" && trackID != ""
+		if songKey != lastSongKey || trackChanged {
 			logTrackChange(metadata)
 			lastSongKey = songKey
 			currentLyrics = nil
@@ -187,10 +197,19 @@ func main() {
 			songStartedAt = time.Now()
 			apiLyricsRefreshed = false
 			lyricsFailureLogged = false
+			idRetry = nextIDRetry{}
+			lastTrackID = ""
+		} else if idArrived && currentLyrics != nil && currentLyrics.Source != lyricsSourceAPI {
+			currentLyrics = nil
+			lastResolve = time.Time{}
+		}
+		if trackID != "" {
+			lastTrackID = trackID
 		}
 
 		if currentLyrics == nil {
-			if !shouldWaitForPlayerLyrics(metadata, time.Since(songStartedAt)) {
+			waitingForID := idRetry.shouldWait(metadata, time.Now())
+			if hasPlayerLyrics(metadata) || (!waitingForID && !shouldWaitForPlayerLyrics(metadata, time.Since(songStartedAt))) {
 				if lastResolve.IsZero() || lyricsNeedRefresh(currentLyrics, metadata, time.Since(lastResolve)) {
 					// 播放器大多在切歌后才异步去取歌词，首次解析可能落空。
 					// 这里在歌词为空时持续重试，避免整首歌都卡在“歌手 - 歌名”。
@@ -237,9 +256,14 @@ func main() {
 }
 
 func buildSongKey(metadata *PlayerMetadata) string {
+	trackID := metadata.TrackID
+	if metadata.Player == "splayer-next" {
+		trackID = ""
+	}
 	return strings.Join([]string{
 		metadata.Player,
-		metadata.TrackID,
+		trackID,
+		metadata.Source,
 		metadata.Title,
 		metadata.Artist,
 		metadata.Album,
@@ -272,6 +296,30 @@ func renderWaybar(out WaybarOutput) string {
 
 // lyricRetryInterval 歌词解析失败后的重试间隔
 const lyricRetryInterval = 5 * time.Second
+
+// nextIDRetry counts spaced ID checks after the initial missing ID.
+type nextIDRetry struct {
+	attempts    int
+	lastAttempt time.Time
+}
+
+func (r *nextIDRetry) shouldWait(metadata *PlayerMetadata, now time.Time) bool {
+	if metadata.Player != "splayer-next" || appConfig.SPlayer.SongIDMode == "search" {
+		return false
+	}
+	if id := extractTrackID(metadata.TrackID); id != "" && id != "0" {
+		return false
+	}
+	if r.lastAttempt.IsZero() {
+		r.lastAttempt = now
+		return true
+	}
+	if r.attempts < 5 && now.Sub(r.lastAttempt) >= lyricRetryInterval {
+		r.attempts++
+		r.lastAttempt = now
+	}
+	return r.attempts < 5
+}
 
 // lyricAPIGracePeriod 切歌后等待播放器 API 歌词的时间。
 // 播放器的歌词通常晚于播放状态就绪，立即回退到外部源会导致歌词与播放器不一致。
@@ -359,10 +407,13 @@ func lookupLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 				}
 			}
 
-			return &ParsedLyrics{
+			parsed := &ParsedLyrics{
 				Original:    parseLRC(result.Original),
 				Translation: parseLRC(result.Translation),
 				Source:      lyricsSourceNCM,
+			}
+			if len(parsed.Original) > 0 || len(parsed.Translation) > 0 {
+				return parsed
 			}
 		}
 	}
@@ -386,8 +437,8 @@ func lookupLyrics(metadata *PlayerMetadata) *ParsedLyrics {
 func resolveSongID(metadata *PlayerMetadata) string {
 	if appConfig.SPlayer.SongIDMode != "search" {
 		// SPlayer-Next 的 ID 只有来源为网易云时才能用于查询网易云歌词。
-		if metadata.Player == "splayer" ||
-			(metadata.Player == "splayer-next" && (metadata.Source == "" || metadata.Source == "netease")) {
+		if (metadata.Player == "splayer-next" && (metadata.Source == "" || metadata.Source == "netease")) ||
+			(metadata.Player != "splayer-next" && matchesPlayerMode(metadata.Player, "splayer")) {
 			if id := extractTrackID(metadata.TrackID); id != "" && id != "0" {
 				return id
 			}

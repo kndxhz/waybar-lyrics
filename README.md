@@ -49,7 +49,7 @@ log:
 - `splayer`：旧版 SPlayer，歌曲 ID 取自 MPRIS。
 - `splayer-next`：通过 SPlayer-Next 外部 API 读取曲目和歌词，优先显示播放器提供的歌词，并补偿网络延迟。需在 SPlayer-Next 设置中开启外部 API。
 
-三种模式都可用 `song_id_mode: search` 强制按歌名和歌手搜索。
+三种模式都可用 `song_id_mode: search` 强制按歌名和歌手搜索。`splayer-next` 的自动模式在尚未取得有效歌曲 ID 时，每隔 5 秒检查一次，最多检查 5 次后按歌名和歌手搜索；等待期间仍可显示播放器 API 提供的歌词。网易云以外来源的 ID 不用于查询网易云歌词。歌词查询依次尝试 TTML、网易云和 LRCLib；网易云搜索不到 ID 时直接尝试 LRCLib，LRCLib 使用播放器提供的歌曲信息。
 
 ## 播放控制
 
