@@ -33,7 +33,7 @@ splayer:
   address: 127.0.0.1 # SPlayer-Next API 地址
   port: 14558        # SPlayer-Next API 端口
   song_id_mode: auto # auto：优先使用播放器歌曲 ID；search：按歌名歌手搜索
-  latency_ms: 100    # SPlayer-Next 歌词提前量（毫秒），0 关闭
+  latency_ms: 100    # 歌词时间补偿（毫秒）：正数提前，负数延后，0 关闭
 log:
   path: /tmp/waybar-lyrics.log
   level: INFO        # DEBUG、INFO、WARN 或 ERROR

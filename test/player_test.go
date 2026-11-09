@@ -123,6 +123,7 @@ func TestLoadConfigLatency(t *testing.T) {
 		want int
 	}{
 		{"自定义延迟", "mode: splayer-next\nsplayer:\n  latency_ms: 250\n", 250},
+		{"负延迟表示延后", "mode: splayer-next\nsplayer:\n  latency_ms: -250\n", -250},
 		{"显式关闭补偿", "mode: splayer-next\nsplayer:\n  latency_ms: 0\n", 0},
 		{"缺少字段使用默认值", "mode: splayer-next\n", defaultLyricLatencyMS},
 	}
@@ -153,12 +154,12 @@ func TestLoadConfigLatency(t *testing.T) {
 	}
 }
 
-func TestValidateConfigRejectsNegativeLatency(t *testing.T) {
+func TestValidateConfigAcceptsNegativeLatency(t *testing.T) {
 	config := defaultConfig()
 	config.Mode = "splayer-next"
 	config.SPlayer.LatencyMS = -1
-	if err := validateConfig(config); err == nil {
-		t.Fatal("负数 latency_ms 应返回错误")
+	if err := validateConfig(config); err != nil {
+		t.Fatalf("负数 latency_ms 应被接受，got %v", err)
 	}
 }
 

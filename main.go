@@ -750,8 +750,8 @@ func buildCurrentLyricText(metadata *PlayerMetadata, lyrics *ParsedLyrics) strin
 	}
 
 	positionMs := metadata.Position / 1000
-	if appConfig.Mode == "splayer-next" && appConfig.SPlayer.LatencyMS > 0 {
-		// API 播放位置存在网络延迟，提前配置的毫秒数抵消，避免歌词慢半拍。
+	if appConfig.Mode == "splayer-next" && appConfig.SPlayer.LatencyMS != 0 {
+		// 正数提前歌词以抵消 API 网络延迟；负数延后歌词，用于修正播放器进度偏快。
 		positionMs += int64(appConfig.SPlayer.LatencyMS)
 	}
 	idx := currentLineIndex(lyrics.Original, positionMs)

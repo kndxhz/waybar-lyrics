@@ -29,6 +29,7 @@ type SPlayerConfig struct {
 	Port       int    `yaml:"port"`
 	SongIDMode string `yaml:"song_id_mode"`
 	// LatencyMS SPlayer-Next 播放进度经 HTTP API 返回时的网络延迟补偿（毫秒）。
+	// 正数表示歌词提前，负数表示歌词延后，0 表示不补偿。
 	LatencyMS int              `yaml:"latency_ms"`
 	API       SPlayerAPIConfig `yaml:"api,omitempty"`
 }
@@ -370,9 +371,6 @@ func validateConfig(config AppConfig) error {
 	case "mpris", "splayer", "splayer-next":
 	default:
 		return errors.New("mode 必须是 mpris、splayer 或 splayer-next")
-	}
-	if config.SPlayer.LatencyMS < 0 {
-		return errors.New("splayer.latency_ms 不能为负数")
 	}
 	if strings.TrimSpace(config.Log.Path) == "" {
 		return errors.New("log.path 不能为空")

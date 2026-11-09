@@ -269,6 +269,13 @@ func TestBuildCurrentLyricTextSPlayerNextLeadsByLatency(t *testing.T) {
 	if got := buildCurrentLyricText(metadata, lyrics); got != "a" {
 		t.Errorf("latency_ms=0 时不应提前歌词，got %q", got)
 	}
+
+	// 负数表示延后：1000ms 时原本已到第二行，延后 100ms 后应仍显示第一行。
+	appConfig.SPlayer.LatencyMS = -100
+	metadata.Position = 1000 * 1000
+	if got := buildCurrentLyricText(metadata, lyrics); got != "a" {
+		t.Errorf("latency_ms=-100 时应延后 100ms，got %q", got)
+	}
 }
 
 func TestLyricsNeedRefresh(t *testing.T) {
