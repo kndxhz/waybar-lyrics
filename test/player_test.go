@@ -52,13 +52,13 @@ func TestLoadConfigCreatesDefault(t *testing.T) {
 
 func TestParseCLI(t *testing.T) {
 	var output bytes.Buffer
-	mode, err := parseCLI([]string{"--mode", "splayer-next"}, &output)
-	if err != nil || mode != "splayer-next" {
-		t.Fatalf("解析 --mode 异常: mode=%q err=%v", mode, err)
+	options, err := parseCLI([]string{"--mode", "splayer-next"}, &output)
+	if err != nil || options.Mode != "splayer-next" || options.Command != "" {
+		t.Fatalf("解析 --mode 异常: options=%#v err=%v", options, err)
 	}
-	mode, err = parseCLI([]string{"-m", "splayer"}, &output)
-	if err != nil || mode != "splayer" {
-		t.Fatalf("解析 -m 异常: mode=%q err=%v", mode, err)
+	options, err = parseCLI([]string{"-m", "splayer"}, &output)
+	if err != nil || options.Mode != "splayer" || options.Command != "" {
+		t.Fatalf("解析 -m 异常: options=%#v err=%v", options, err)
 	}
 	if _, err = parseCLI([]string{"--invalid"}, &output); err == nil {
 		t.Fatal("未知参数应返回错误")

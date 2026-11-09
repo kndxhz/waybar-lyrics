@@ -109,7 +109,7 @@ type PlayerMetadata struct {
 }
 
 func main() {
-	mode, err := parseCLI(os.Args[1:], os.Stdout)
+	options, err := parseCLI(os.Args[1:], os.Stdout)
 	if errors.Is(err, flag.ErrHelp) {
 		return
 	}
@@ -123,10 +123,18 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	appConfig, err = applyModeOverride(appConfig, mode)
+	appConfig, err = applyModeOverride(appConfig, options.Mode)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "配置错误：", err)
 		os.Exit(1)
+	}
+	if options.Command != "" {
+		// 不启动歌词循环，也不打开/清空正在运行的歌词进程日志。
+		if err := controlPlayer(options.Command); err != nil {
+			fmt.Fprintln(os.Stderr, "播放控制失败：", err)
+			os.Exit(1)
+		}
+		return
 	}
 	logFile, err := openLogFile(appConfig.Log.Path)
 	if err != nil {
@@ -800,8 +808,11 @@ func getMPRISMetadata(preferred string) *PlayerMetadata {
 			continue
 		}
 		shortName := strings.TrimPrefix(name, "org.mpris.MediaPlayer2.")
-		isSPlayer := strings.Contains(strings.ToLower(shortName), "splayer")
-		if (preferred == "splayer" && isSPlayer) || (preferred == "" && !isSPlayer) {
+		mode := preferred
+		if mode == "" {
+			mode = "mpris"
+		}
+		if matchesPlayerMode(shortName, mode) {
 			targetPlayer = name
 			break
 		}

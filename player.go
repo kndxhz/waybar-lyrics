@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -49,6 +53,148 @@ func getPlayerMetadata() *PlayerMetadata {
 	default:
 		return getMPRISMetadata("")
 	}
+}
+
+func isPlayerCommand(command string) bool {
+	switch command {
+	case "play", "pause", "play-pause", "next", "previous", "stop":
+		return true
+	default:
+		return false
+	}
+}
+
+// matchesPlayerMode 与歌词读取共用筛选规则，避免旧版 SPlayer 控制其他播放器。
+func matchesPlayerMode(name, mode string) bool {
+	isSPlayer := strings.Contains(strings.ToLower(name), "splayer")
+	return (mode == "splayer" && isSPlayer) || (mode == "mpris" && !isSPlayer)
+}
+
+// controlPlayer 是一次性控制入口；API 失败时不回退到其他播放器。
+func controlPlayer(command string) error {
+	if !isPlayerCommand(command) {
+		return fmt.Errorf("不支持的控制命令：%s", command)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	switch appConfig.Mode {
+	case "splayer-next":
+		return controlSPlayerNext(ctx, command)
+	case "mpris", "splayer":
+		return controlWithPlayerctl(ctx, command)
+	default:
+		return fmt.Errorf("不支持的播放器模式：%s", appConfig.Mode)
+	}
+}
+
+func controlSPlayerNext(ctx context.Context, command string) error {
+	baseURL := splayerBaseURL()
+	if baseURL == "" {
+		return errors.New("SPlayer-Next API 地址无效")
+	}
+	client := &http.Client{
+		Timeout: 3 * time.Second,
+		// 控制请求不跟随重定向，避免 POST 被转成 GET 或发往其他服务。
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	if command == "play-pause" {
+		var status struct {
+			State string `json:"state"`
+		}
+		if err := requestSPlayerControl(ctx, client, baseURL, http.MethodGet, "/status", &status); err != nil {
+			return err
+		}
+		state := strings.ToLower(strings.TrimSpace(status.State))
+		if state == "" {
+			return errors.New("SPlayer-Next API 未返回播放状态")
+		}
+		command = "play"
+		if state == "playing" {
+			command = "pause"
+		}
+	}
+	if command == "previous" {
+		command = "prev"
+	}
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if err := requestSPlayerControl(ctx, client, baseURL, http.MethodPost, "/"+command, &result); err != nil {
+		return err
+	}
+	if !result.OK {
+		if result.Error != "" {
+			return fmt.Errorf("SPlayer-Next API 控制失败：%s", result.Error)
+		}
+		return errors.New("SPlayer-Next API 未确认控制成功（缺少 ok: true）")
+	}
+	return nil
+}
+
+func requestSPlayerControl(ctx context.Context, client *http.Client, baseURL, method, path string, target any) error {
+	var body io.Reader
+	if method == http.MethodPost {
+		body = strings.NewReader("{}")
+	}
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
+	if err != nil {
+		return fmt.Errorf("创建 SPlayer-Next API 请求失败：%w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("SPlayer-Next API %s %s 失败：%w", method, path, err)
+	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(res.Body, 64*1024))
+	if err != nil {
+		return fmt.Errorf("读取 SPlayer-Next API 响应失败：%w", err)
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("SPlayer-Next API %s %s 返回 %s：%s", method, path, res.Status, strings.TrimSpace(string(data)))
+	}
+	if err := json.Unmarshal(data, target); err != nil {
+		return fmt.Errorf("解析 SPlayer-Next API %s 响应失败：%w", path, err)
+	}
+	return nil
+}
+
+func controlWithPlayerctl(ctx context.Context, command string) error {
+	output, err := runPlayerctl(ctx, "--list-all")
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		player := strings.TrimSpace(line)
+		if player != "" && matchesPlayerMode(player, appConfig.Mode) {
+			_, err := runPlayerctl(ctx, "--player", player, command)
+			return err
+		}
+	}
+	return fmt.Errorf("未找到 %s 模式可控制的 MPRIS 播放器", appConfig.Mode)
+}
+
+func runPlayerctl(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "playerctl", args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	output, err := cmd.Output()
+	if errors.Is(err, exec.ErrNotFound) {
+		return nil, errors.New("未找到 playerctl，请安装 playerctl 后再使用 MPRIS 播放控制")
+	}
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("playerctl 执行超时：%w", ctx.Err())
+	}
+	if err != nil {
+		return nil, fmt.Errorf("playerctl %s 失败：%w；%s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+	}
+	return output, nil
 }
 
 func buildSPlayerURL(port int, apiPath string) string {

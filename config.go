@@ -322,26 +322,40 @@ func mergeConfigDefaults(existing, defaults *yaml.Node) bool {
 	return changed
 }
 
-func parseCLI(args []string, stdout io.Writer) (string, error) {
+type CLIOptions struct {
+	Mode    string
+	Command string
+}
+
+func parseCLI(args []string, stdout io.Writer) (CLIOptions, error) {
+	var options CLIOptions
 	flags := flag.NewFlagSet("waybar-lyrics", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Usage = func() {
-		fmt.Fprintln(stdout, "用法：waybar-lyrics [选项]")
-		fmt.Fprintln(stdout, "Waybar 同步歌词模块。命令行模式优先级高于 YAML 配置。")
-		fmt.Fprintln(stdout, "选项：")
+		fmt.Fprintln(stdout, "用法：waybar-lyrics [选项] [命令]")
+		fmt.Fprintln(stdout, "不传命令时输出 Waybar 同步歌词；控制命令执行一次后退出。")
+		fmt.Fprintln(stdout, "命令：play、pause、play-pause、next、previous、stop")
+		fmt.Fprintln(stdout, "splayer-next 使用 HTTP API，其他模式使用 playerctl。")
+		fmt.Fprintln(stdout, "选项（放在命令之前，模式优先级高于 YAML 配置）：")
 		fmt.Fprintln(stdout, "  -mode string  播放器模式：mpris、splayer 或 splayer-next（覆盖配置文件）")
 		fmt.Fprintln(stdout, "  -m string     播放器模式简写")
 		fmt.Fprintln(stdout, "  -h, --help    显示帮助")
 	}
-	mode := flags.String("mode", "", "播放器模式：mpris、splayer 或 splayer-next（覆盖配置文件）")
-	flags.StringVar(mode, "m", "", "播放器模式的简写")
+	flags.StringVar(&options.Mode, "mode", "", "播放器模式：mpris、splayer 或 splayer-next（覆盖配置文件）")
+	flags.StringVar(&options.Mode, "m", "", "播放器模式的简写")
 	if err := flags.Parse(args); err != nil {
-		return "", err
+		return options, err
 	}
-	if flags.NArg() != 0 {
-		return "", fmt.Errorf("不支持的位置参数：%s", strings.Join(flags.Args(), " "))
+	if flags.NArg() > 1 {
+		return options, fmt.Errorf("只支持一个控制命令，选项需放在命令之前：%s", strings.Join(flags.Args(), " "))
 	}
-	return *mode, nil
+	if flags.NArg() == 1 {
+		options.Command = flags.Arg(0)
+		if !isPlayerCommand(options.Command) {
+			return options, fmt.Errorf("不支持的控制命令：%s", options.Command)
+		}
+	}
+	return options, nil
 }
 
 func applyModeOverride(config AppConfig, mode string) (AppConfig, error) {
