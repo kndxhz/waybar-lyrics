@@ -9,10 +9,21 @@
 ### Arch Linux（AUR）
 
 ```bash
-yay -S waybar-lyrics-git
+yay -S waybar-lyrics
 ```
 
-### 手动安装
+包中二进制安装在 `/usr/bin/waybar-lyrics`，可直接用 `waybar-lyrics` 调用。
+
+### 预编译二进制
+
+从 [Releases](https://github.com/kndxhz/waybar-lyrics/releases) 下载对应架构的静态二进制，安装到 PATH 中的目录：
+
+```bash
+chmod +x waybar-lyrics-linux-amd64
+sudo install -Dm755 waybar-lyrics-linux-amd64 /usr/local/bin/waybar-lyrics
+```
+
+### 手动编译
 
 需要 Go。`mpris` / `splayer` 模式的播放控制需要安装 `playerctl`；`splayer-next` 模式只使用 HTTP API，不依赖 `playerctl`。仅显示歌词不需要 `playerctl`。
 
@@ -22,6 +33,8 @@ cd waybar-lyrics
 go build -o waybar-lyrics
 sudo install -Dm755 waybar-lyrics /usr/bin/waybar-lyrics
 ```
+
+安装完成后可运行 `waybar-lyrics --version`（或 `-V`）确认版本。
 
 ## 配置
 
@@ -103,6 +116,8 @@ waybar-lyrics --mode splayer-next play-pause
 ```
 
 把 `custom/lyrics` 加入 `modules-left`、`modules-center` 或 `modules-right`。左键播放/暂停，右键下一首，中键上一首。`exec-on-event: false` 避免点击后重新启动持续运行的歌词进程。若 `exec` 使用 `--mode splayer-next` 等命令行覆盖模式，点击命令也应添加相同的模式选项，例如 `waybar-lyrics --mode splayer-next play-pause`；或者直接在 YAML 中统一设置模式。
+
+`exec` 与点击命令都直接写 `waybar-lyrics`，不要写绝对路径或 `~/.local/bin` 下的旧副本：程序安装后就在 PATH 中（`/usr/bin` 或 `/usr/local/bin`），写死路径会导致副本过期、遮蔽包管理器的更新。
 
 tooltip 显示“歌手 - 歌名”和歌词来源（`API`、`TTML`、`NCM`、`LRCLib`）。没有播放中的曲目时模块自动隐藏。
 
