@@ -51,6 +51,15 @@ splayer:
 log:
   path: /tmp/waybar-lyrics.log
   level: INFO        # DEBUG、INFO、WARN 或 ERROR
+llm:
+  enable: false      # 是否用 LLM 从 MPRIS 元数据里提取歌名歌手
+  base_url: https://api.deepseek.com/v1 # OpenAI 兼容接口地址
+  model_name: deepseek-flash
+  api_key: xxx       # 接口密钥，按需替换
+  prompt: |-         # {metadata} 会被替换成播放器元数据
+    基于以下内容，如果这个媒体是歌曲，提取这个媒体的歌名，输出{"title":"歌名","singer":"歌手"}，歌名不要包含歌手，歌手如果数据内没有，不要瞎猜，只需要输出为null。如果不是歌曲，输出{"is_song":false}
+
+    {metadata}
 ```
 
 `--mode`/`-m` 可临时覆盖配置文件中的模式。
@@ -91,6 +100,18 @@ log:
 
 回退时沿用 `mpris` 模式的规则：遍历所有 MPRIS 播放器，排除 SPlayer 自身，优先正在播放的那台。回退得到的歌名来自 D-Bus，不做 `latency_ms` 网络延迟补偿，也不会等待播放器 API 歌词，直接按歌名和歌手搜索歌词。把 `mpris-fallback` 设为 `false` 可关闭回退，此时 SPlayer 读不到歌曲就显示为没有播放中的曲目。
 
+#### 基于 LLM 的歌曲信息提取
+
+`llm.enable`（默认 `false`）开启后，凡是通过 MPRIS 取到的歌曲（`mpris` 模式，以及 `splayer` / `splayer-next` 的回退）都会先把播放器元数据交给 OpenAI 兼容接口，由模型判断是否为歌曲并提取歌名、歌手，再按「歌手 歌名」搜索歌词。
+
+- `llm.base_url` 默认 `https://api.deepseek.com/v1`，程序请求 `{base_url}/chat/completions`。
+- `llm.model_name` 默认 `deepseek-flash`；`llm.api_key` 默认 `xxx`，需替换为可用密钥。
+- `llm.prompt` 是提取指令，其中 `{metadata}` 会被替换成播放器元数据的完整内容（形如 `xesam:title 歌名`、`xesam:artist 歌手` 的多行文本）。旧配置文件缺少 `llm` 节或其中个别字段时自动补默认值，不覆盖已显式设置的值。
+- 模型返回的原始文本会先清洗（去掉 `<think>` 思考标签及带属性的写法、markdown 代码块标记），再截取首个 `{` 到最后一个 `}` 解析 JSON。
+- 返回 `{"title":"歌名","singer":"歌手"}` 时按「歌手 歌名」搜索；`singer` 为 `null` 时只用歌名搜索。
+- 返回 `{"is_song":false}`、接口超时或输出无法解析时不会中断歌词显示，程序记录日志后沿用播放器原始标题搜索。
+- 同一首歌只请求一次；失败结果在 60 秒内不再重试，避免每轮刷新都打接口。
+
 ## 播放控制
 
 程序内提供统一控制入口，读取同一份 YAML 配置，也支持用 `--mode` / `-m` 临时切换：
@@ -105,11 +126,12 @@ waybar-lyrics stop          # 停止
 waybar-lyrics --mode splayer-next play-pause
 ```
 
-- `splayer-next`：使用配置中的 `splayer.address` 和 `splayer.port`，按[官方 API 文档](https://github.com/SPlayer-Dev/SPlayer-Next/blob/dev/docs/api.md)调用 `POST /api/play`、`/api/pause`、`/api/next`、`/api/prev`、`/api/stop`。`play-pause` 先查询 `GET /api/status`，正在播放时暂停，否则播放；API 失败不会回退到 `playerctl`。
+- `splayer-next`：使用配置中的 `splayer.address` 和 `splayer.port`，按[官方 API 文档](https://github.com/SPlayer-Dev/SPlayer-Next/blob/dev/docs/api.md)调用 `POST /api/play`、`/api/pause`、`/api/next`、`/api/prev`、`/api/stop`。`play-pause` 先查询 `GET /api/status`，正在播放时暂停，否则播放。API 失败时若启用了 `mpris-fallback`，控制命令会回退给 `playerctl` 控制其他播放器。
 - `splayer` / `mpris`：程序直接执行系统中的 `playerctl`。先列出播放器，沿用歌词模式的筛选规则：`splayer` 只选择名称含 SPlayer 的播放器，`mpris` 排除 SPlayer；控制第一个匹配项，不向所有播放器广播。
+- `splayer` 模式找不到可控制的 SPlayer 时，若启用了 `mpris-fallback`，同样回退到其他播放器。
 - 控制命令执行一次后退出，不输出歌词、不清空歌词进程日志；失败时向标准错误输出原因并以非零状态退出。无命令时仍持续输出歌词。
 - 选项应放在命令之前。使用 `waybar-lyrics --help` 查看帮助。
-- 使用 `--version` 或 `-V` 打印版本号后退出，输出形如 `waybar-lyrics 1.4.2`。
+- 使用 `--version` 或 `-V` 打印版本号后退出，输出形如 `waybar-lyrics 1.5.1`。
 
 ## Waybar 配置
 
