@@ -184,12 +184,13 @@ func callLLMChat(ctx context.Context, prompt string) (string, error) {
 }
 
 // llmExtractionFor 带缓存的提取入口，键为播放器与原始标题歌手，同一首歌只请求一次。
-func llmExtractionFor(key, metadataText string) (llmExtraction, error) {
+// 第二个返回值表示结果是否直接来自缓存，调用方据此避免每轮刷新都打日志。
+func llmExtractionFor(key, metadataText string) (llmExtraction, error, bool) {
 	llmCache.mu.Lock()
 	if entry, ok := llmCache.entries[key]; ok {
 		if entry.expires.IsZero() || time.Now().Before(entry.expires) {
 			llmCache.mu.Unlock()
-			return entry.extraction, entry.err
+			return entry.extraction, entry.err, true
 		}
 		delete(llmCache.entries, key)
 	}
@@ -207,7 +208,7 @@ func llmExtractionFor(key, metadataText string) (llmExtraction, error) {
 	}
 	llmCache.entries[key] = entry
 	llmCache.mu.Unlock()
-	return extraction, err
+	return extraction, err, false
 }
 
 // applyLLMExtraction 用 LLM 从元数据文本里提取歌名与歌手。
@@ -220,16 +221,23 @@ func applyLLMExtraction(metadata *PlayerMetadata, metadataText string) {
 		return
 	}
 	key := metadata.Player + "\x00" + metadata.Title + "\x00" + metadata.Artist
-	extraction, err := llmExtractionFor(key, metadataText)
+	extraction, err, cached := llmExtractionFor(key, metadataText)
+	// 同一首歌每轮刷新都会走到这里，结果命中缓存时不再重复记日志。
 	if err != nil {
-		logEvent("WARN", "LLM 提取歌曲信息失败，改用原始标题「%s」搜索：%v", metadata.Title, err)
+		if !cached {
+			logEvent("WARN", "LLM 提取歌曲信息失败，改用原始标题「%s」搜索：%v", metadata.Title, err)
+		}
 		return
 	}
 	if !extraction.IsSong {
-		logEvent("INFO", "LLM 判定该媒体不是歌曲，保留原始标题「%s」", metadata.Title)
+		if !cached {
+			logEvent("INFO", "LLM 判定该媒体不是歌曲，保留原始标题「%s」", metadata.Title)
+		}
 		return
 	}
-	logEvent("DEBUG", "LLM 提取歌曲信息：歌名=%s 歌手=%s", extraction.Title, extraction.Singer)
+	if !cached {
+		logEvent("DEBUG", "LLM 提取歌曲信息：歌名=%s 歌手=%s", extraction.Title, extraction.Singer)
+	}
 	metadata.Title = extraction.Title
 	metadata.Artist = extraction.Singer
 }

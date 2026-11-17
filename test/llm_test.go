@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -279,5 +280,25 @@ func TestGetMPRISMetadataAppliesLLM(t *testing.T) {
 	}
 	if metadata.Title != "譬如我" || metadata.Artist != "洛天依Official, 姜洄" {
 		t.Fatalf("LLM 结果未覆盖元数据：%+v", metadata)
+	}
+}
+
+func TestApplyLLMExtractionLogsOncePerTrack(t *testing.T) {
+	server, _ := newLLMServer(t, "xesam:title 语音消息", `{"is_song":false}`, http.StatusOK)
+	configureLLMTest(t, server.URL)
+
+	var buf bytes.Buffer
+	oldOutput := appLog.Writer()
+	appLog.SetOutput(&buf)
+	t.Cleanup(func() { appLog.SetOutput(oldOutput) })
+
+	rawMetadata := func() *PlayerMetadata {
+		return &PlayerMetadata{Player: "telegram.instance1", Title: "语音消息"}
+	}
+	for i := 0; i < 3; i++ {
+		applyLLMExtraction(rawMetadata(), "xesam:title 语音消息")
+	}
+	if got := strings.Count(buf.String(), "不是歌曲"); got != 1 {
+		t.Fatalf("同一首歌只应记一次日志，got %d 次：%s", got, buf.String())
 	}
 }
