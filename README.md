@@ -42,6 +42,7 @@ sudo install -Dm755 waybar-lyrics /usr/bin/waybar-lyrics
 
 ```yaml
 mode: splayer-next   # mpris、splayer 或 splayer-next
+mpris-fallback: true # SPlayer 模式读不到歌曲时回退到 MPRIS；mpris 模式下忽略该项
 splayer:
   address: 127.0.0.1 # SPlayer-Next API 地址
   port: 14558        # SPlayer-Next API 端口
@@ -53,6 +54,8 @@ log:
 ```
 
 `--mode`/`-m` 可临时覆盖配置文件中的模式。
+
+`mpris-fallback` 为顶层布尔值，默认 `true`。旧配置文件缺少该项时会自动补写；`mode` 为 `mpris` 时该项无意义，程序启动时会记一条 `WARN` 日志说明已忽略。
 
 日志默认写入 `/tmp/waybar-lyrics.log`，每次启动时清空；仅 `DEBUG` 级别记录完整歌词。
 
@@ -78,6 +81,15 @@ log:
 | 本地文件（任意播放器） | 标题常是文件名，可能带音轨号（`01 - 歌手 - 歌名.flac`） | 去扩展名与音轨号，再拆分歌手歌名 |
 
 三种模式都可用 `song_id_mode: search` 强制按歌名和歌手搜索。`splayer-next` 的自动模式在尚未取得有效歌曲 ID 时，每隔 5 秒检查一次，最多检查 5 次后按歌名和歌手搜索；等待期间仍可显示播放器 API 提供的歌词。网易云以外来源的 ID 不用于查询网易云歌词。歌词查询依次尝试 TTML、网易云和 LRCLib；网易云搜索不到 ID 时直接尝试 LRCLib，LRCLib 使用播放器提供的歌曲信息。
+
+#### `splayer` / `splayer-next` 的 MPRIS 回退
+
+`mpris-fallback`（默认 `true`）让 SPlayer 模式在以下情况自动改用 MPRIS 读取其他播放器的歌曲：
+
+- `splayer-next`：SPlayer-Next 的外部 API 连不通，或接口读不到当前曲目；
+- `splayer`：MPRIS 上找不到 SPlayer，或从 SPlayer 读不到歌名。
+
+回退时沿用 `mpris` 模式的规则：遍历所有 MPRIS 播放器，排除 SPlayer 自身，优先正在播放的那台。回退得到的歌名来自 D-Bus，不做 `latency_ms` 网络延迟补偿，也不会等待播放器 API 歌词，直接按歌名和歌手搜索歌词。把 `mpris-fallback` 设为 `false` 可关闭回退，此时 SPlayer 读不到歌曲就显示为没有播放中的曲目。
 
 ## 播放控制
 
