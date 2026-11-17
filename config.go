@@ -324,8 +324,9 @@ func mergeConfigDefaults(existing, defaults *yaml.Node) bool {
 }
 
 type CLIOptions struct {
-	Mode    string
-	Command string
+	Mode        string
+	Command     string
+	ShowVersion bool
 }
 
 func parseCLI(args []string, stdout io.Writer) (CLIOptions, error) {
@@ -340,10 +341,13 @@ func parseCLI(args []string, stdout io.Writer) (CLIOptions, error) {
 		fmt.Fprintln(stdout, "选项（放在命令之前，模式优先级高于 YAML 配置）：")
 		fmt.Fprintln(stdout, "  -mode string  播放器模式：mpris、splayer 或 splayer-next（覆盖配置文件）")
 		fmt.Fprintln(stdout, "  -m string     播放器模式简写")
+		fmt.Fprintln(stdout, "  -V, --version 显示版本")
 		fmt.Fprintln(stdout, "  -h, --help    显示帮助")
 	}
 	flags.StringVar(&options.Mode, "mode", "", "播放器模式：mpris、splayer 或 splayer-next（覆盖配置文件）")
 	flags.StringVar(&options.Mode, "m", "", "播放器模式的简写")
+	flags.BoolVar(&options.ShowVersion, "version", false, "显示版本")
+	flags.BoolVar(&options.ShowVersion, "V", false, "显示版本")
 	if err := flags.Parse(args); err != nil {
 		return options, err
 	}

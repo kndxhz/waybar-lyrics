@@ -24,6 +24,9 @@ var base_163 = "https://music.163.com"
 var base_lrclib = "https://lrclib.net"
 var base_ttml = "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/ncm-lyrics"
 
+// version 为当前发布版本，可用 -ldflags "-X main.version=…" 覆盖
+var version = "1.4.2"
+
 // 歌词来源标识，会追加到 Waybar tooltip 中
 const (
 	lyricsSourceAPI    = "API"    // 播放器 API 自带歌词（SPlayer-Next）
@@ -117,6 +120,10 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "参数错误：", err)
 		os.Exit(2)
+	}
+	if options.ShowVersion {
+		fmt.Printf("waybar-lyrics %s\n", version)
+		return
 	}
 
 	appConfig, err = loadConfig()

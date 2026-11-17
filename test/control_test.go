@@ -87,6 +87,31 @@ func TestParseCLIControlHelp(t *testing.T) {
 	}
 }
 
+func TestParseCLIVersion(t *testing.T) {
+	for _, args := range [][]string{{"--version"}, {"-V"}, {"--version", "--mode", "mpris"}, {"-m", "splayer", "-V"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			options, err := parseCLI(args, io.Discard)
+			if err != nil {
+				t.Fatalf("parseCLI(%q) error = %v，want nil", args, err)
+			}
+			if !options.ShowVersion {
+				t.Fatalf("parseCLI(%q) ShowVersion = false，want true", args)
+			}
+		})
+	}
+	options, err := parseCLI([]string{"-m", "mpris"}, io.Discard)
+	if err != nil || options.ShowVersion {
+		t.Fatalf("默认情况下不应显示版本：options=%#v err=%v", options, err)
+	}
+}
+
+func TestVersionString(t *testing.T) {
+	cleaned := strings.ReplaceAll(version, ".", "")
+	if strings.Count(version, ".") != 2 || strings.Trim(cleaned, "0123456789") != "" {
+		t.Fatalf("version = %q，应为 MAJOR.MINOR.PATCH", version)
+	}
+}
+
 func TestMatchesPlayerMode(t *testing.T) {
 	for _, test := range []struct {
 		name        string
