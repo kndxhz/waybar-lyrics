@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/godbus/dbus/v5"
 )
 
 func TestParseTTMLSkipsRomanization(t *testing.T) {
@@ -633,4 +635,353 @@ func TestResolveLyricsTreatsEmptyResultAsFailure(t *testing.T) {
 	if lyrics != nil {
 		t.Fatalf("空歌词应视为解析失败以便重试，got %#v", lyrics)
 	}
+}
+
+// fakeMPRISPlayer 模拟一台只提供属性的 MPRIS 播放器，用于验证 D-Bus 读取路径。
+type fakeMPRISPlayer struct {
+	props map[string]dbus.Variant
+}
+
+func (p *fakeMPRISPlayer) Get(interfaceName, propertyName string) (dbus.Variant, *dbus.Error) {
+	value, ok := p.props[propertyName]
+	if !ok {
+		return dbus.MakeVariant(""), dbus.NewError("org.freedesktop.DBus.Error.UnknownProperty", nil)
+	}
+	return value, nil
+}
+
+func (p *fakeMPRISPlayer) GetAll(interfaceName string) (map[string]dbus.Variant, *dbus.Error) {
+	if interfaceName != "org.mpris.MediaPlayer2.Player" {
+		return nil, dbus.NewError("org.freedesktop.DBus.Error.UnknownInterface", nil)
+	}
+	return p.props, nil
+}
+
+func (p *fakeMPRISPlayer) Set(interfaceName, propertyName string, value dbus.Variant) *dbus.Error {
+	return dbus.NewError("org.freedesktop.DBus.Error.PropertyReadOnly", nil)
+}
+
+// mprisProps 按播放器上报的样子拼一份 GetAll 属性。
+func mprisProps(status string, metadata map[string]dbus.Variant) map[string]dbus.Variant {
+	return map[string]dbus.Variant{
+		"PlaybackStatus": dbus.MakeVariant(status),
+		"Position":       dbus.MakeVariant(int64(54000000)),
+		"Metadata":       dbus.MakeVariant(metadata),
+	}
+}
+
+// TestMPRISPlayerMetadataShapes 覆盖各播放器实际上报的元数据形态：
+// Chromium / Edge（网页媒体会话）、Firefox（网页标题 + 空歌手列表）、
+// VLC（完整标签）、mpv（标签缺失或网络流地址）、Telegram（语音消息占位标题）。
+func TestMPRISPlayerMetadataShapes(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		player     string
+		props      map[string]dbus.Variant
+		wantOK     bool
+		wantTitle  string
+		wantArtist string
+		wantStatus string
+	}{
+		{
+			name:   "chromium 播放网易云网页",
+			player: "chromium.instance351362",
+			props: mprisProps("Playing", map[string]dbus.Variant{
+				"mpris:trackid": dbus.MakeVariant(dbus.ObjectPath("/org/chromium/MediaPlayer2/TrackList/1")),
+				"xesam:title":   dbus.MakeVariant("晴天"),
+				"xesam:artist":  dbus.MakeVariant([]string{"周杰伦"}),
+				"xesam:album":   dbus.MakeVariant("叶惠美"),
+				"mpris:length":  dbus.MakeVariant(int64(269000000)),
+				"mpris:artUrl":  dbus.MakeVariant("https://example.com/cover.jpg"),
+			}),
+			wantOK:     true,
+			wantTitle:  "晴天",
+			wantArtist: "周杰伦",
+			wantStatus: "Playing",
+		},
+		{
+			name:   "chromium 空闲只有时长",
+			player: "chromium.instance351362",
+			props: mprisProps("Stopped", map[string]dbus.Variant{
+				"mpris:length": dbus.MakeVariant(int64(0)),
+			}),
+			wantOK: false,
+		},
+		{
+			name:   "edge 播放本地文件",
+			player: "msedge.instance7788",
+			props: mprisProps("Playing", map[string]dbus.Variant{
+				"xesam:title":  dbus.MakeVariant("01 - 周杰伦 - 晴天.flac"),
+				"xesam:artist": dbus.MakeVariant([]string{""}),
+			}),
+			wantOK:     true,
+			wantTitle:  "晴天",
+			wantArtist: "周杰伦",
+			wantStatus: "Playing",
+		},
+		{
+			name:   "chrome 多个歌手",
+			player: "google-chrome.instance9",
+			props: mprisProps("Playing", map[string]dbus.Variant{
+				"xesam:title":  dbus.MakeVariant("譬如我"),
+				"xesam:artist": dbus.MakeVariant([]string{"洛天依Official", "姜洄"}),
+			}),
+			wantOK:     true,
+			wantTitle:  "譬如我",
+			wantArtist: "洛天依Official, 姜洄",
+			wantStatus: "Playing",
+		},
+		{
+			name:   "firefox 播放本地文件",
+			player: "firefox.instance_1_5561",
+			props: mprisProps("Playing", map[string]dbus.Variant{
+				"mpris:trackid": dbus.MakeVariant(dbus.ObjectPath("/org/mpris/MediaPlayer2/firefox")),
+				"xesam:title":   dbus.MakeVariant("洛天依Official,姜洄 - 譬如我.flac"),
+				"xesam:artist":  dbus.MakeVariant([]string{""}),
+				"xesam:album":   dbus.MakeVariant(""),
+				"mpris:length":  dbus.MakeVariant(int64(153000000)),
+			}),
+			wantOK:     true,
+			wantTitle:  "譬如我",
+			wantArtist: "洛天依Official,姜洄",
+			wantStatus: "Playing",
+		},
+		{
+			name:   "firefox 播放 YouTube Music",
+			player: "firefox.instance_1_5561",
+			props: mprisProps("Playing", map[string]dbus.Variant{
+				"xesam:title":  dbus.MakeVariant("晴天 - YouTube Music"),
+				"xesam:artist": dbus.MakeVariant(""),
+			}),
+			wantOK:     true,
+			wantTitle:  "晴天",
+			wantArtist: "",
+			wantStatus: "Playing",
+		},
+		{
+			name:   "vlc 完整标签",
+			player: "vlc",
+			props: mprisProps("Playing", map[string]dbus.Variant{
+				"mpris:trackid": dbus.MakeVariant(dbus.ObjectPath("/org/videolan/vlc/playlist/3")),
+				"xesam:title":   dbus.MakeVariant("譬如我"),
+				"xesam:artist":  dbus.MakeVariant([]string{"洛天依Official, 姜洄"}),
+				"xesam:album":   dbus.MakeVariant("譬如我"),
+				"mpris:length":  dbus.MakeVariant(int64(153500000)),
+			}),
+			wantOK:     true,
+			wantTitle:  "譬如我",
+			wantArtist: "洛天依Official, 姜洄",
+			wantStatus: "Playing",
+		},
+		{
+			name:   "vlc 空闲把播放器名当歌名",
+			player: "vlc",
+			props: mprisProps("Stopped", map[string]dbus.Variant{
+				"xesam:title":  dbus.MakeVariant("vlc"),
+				"xesam:artist": dbus.MakeVariant([]string{""}),
+			}),
+			wantOK: false,
+		},
+		{
+			name:   "mpv 播放网络流只有地址",
+			player: "mpv",
+			props: mprisProps("Playing", map[string]dbus.Variant{
+				"xesam:title":  dbus.MakeVariant(""),
+				"xesam:artist": dbus.MakeVariant([]string{}),
+				"xesam:url":    dbus.MakeVariant("https://cdn.example.com/live/%E6%99%B4%E5%A4%A9.m3u8"),
+				"mpris:length": dbus.MakeVariant(uint64(180000000)),
+			}),
+			wantOK:     true,
+			wantTitle:  "晴天",
+			wantArtist: "",
+			wantStatus: "Playing",
+		},
+		{
+			name:   "mpv 标签齐全",
+			player: "mpv",
+			props: mprisProps("Playing", map[string]dbus.Variant{
+				"xesam:title":  dbus.MakeVariant("晴天"),
+				"xesam:artist": dbus.MakeVariant([]string{"周杰伦"}),
+				"xesam:url":    dbus.MakeVariant("file:///home/kndxhz/Music/01%20-%20%E5%91%A8%E6%9D%B0%E4%BC%A6%20-%20%E6%99%B4%E5%A4%A9.flac"),
+			}),
+			wantOK:     true,
+			wantTitle:  "晴天",
+			wantArtist: "周杰伦",
+			wantStatus: "Playing",
+		},
+		{
+			name:   "telegram 语音消息占位标题",
+			player: "telegramdesktop",
+			props: mprisProps("Playing", map[string]dbus.Variant{
+				"xesam:title":  dbus.MakeVariant("voice message"),
+				"xesam:artist": dbus.MakeVariant([]string{""}),
+				"xesam:url":    dbus.MakeVariant("file:///tmp/voice_messages_1.ogg"),
+			}),
+			wantOK: false,
+		},
+		{
+			name:   "telegram 播放音乐文件",
+			player: "telegramdesktop",
+			props: mprisProps("Playing", map[string]dbus.Variant{
+				"xesam:title":  dbus.MakeVariant("洛天依Official,姜洄 - 譬如我.mp3"),
+				"xesam:artist": dbus.MakeVariant([]string{""}),
+			}),
+			wantOK:     true,
+			wantTitle:  "譬如我",
+			wantArtist: "洛天依Official,姜洄",
+			wantStatus: "Playing",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			metadata, status, ok := metadataFromMPRISProps(tt.props, tt.player)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %t, want %t（metadata=%#v）", ok, tt.wantOK, metadata)
+			}
+			if !tt.wantOK {
+				return
+			}
+			if metadata.Title != tt.wantTitle || metadata.Artist != tt.wantArtist {
+				t.Errorf("歌名歌手 = (%q, %q), want (%q, %q)", metadata.Title, metadata.Artist, tt.wantTitle, tt.wantArtist)
+			}
+			if status != tt.wantStatus {
+				t.Errorf("播放状态 = %q, want %q", status, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// TestReadMPRISPlayerOverDBus 验证真实的 D-Bus 读取路径（Firefox 播放本地文件的样子）。
+func TestReadMPRISPlayerOverDBus(t *testing.T) {
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		t.Skipf("跳过：没有可用的会话总线（%v）", err)
+	}
+	defer conn.Close()
+
+	player := &fakeMPRISPlayer{props: mprisProps("Playing", map[string]dbus.Variant{
+		"mpris:trackid": dbus.MakeVariant(dbus.ObjectPath("/org/mpris/MediaPlayer2/firefox")),
+		"xesam:title":   dbus.MakeVariant("洛天依Official,姜洄 - 譬如我.flac"),
+		"xesam:artist":  dbus.MakeVariant([]string{""}),
+		"mpris:length":  dbus.MakeVariant(int64(153000000)),
+	})}
+
+	const busName = "org.mpris.MediaPlayer2.waybar-lyrics-test"
+	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
+	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
+		t.Skipf("跳过：无法注册测试播放器（%v, %v）", reply, err)
+	}
+	t.Cleanup(func() { _, _ = conn.ReleaseName(busName) })
+	if err := conn.Export(player, "/org/mpris/MediaPlayer2", "org.freedesktop.DBus.Properties"); err != nil {
+		t.Fatalf("导出测试播放器失败: %v", err)
+	}
+
+	metadata, status, ok := readMPRISPlayer(conn, busName, "waybar-lyrics-test")
+	if !ok {
+		t.Fatal("未能通过 D-Bus 读取 MPRIS 元数据")
+	}
+	if status != "Playing" {
+		t.Errorf("播放状态 = %q, want Playing", status)
+	}
+	if metadata.Title != "譬如我" || metadata.Artist != "洛天依Official,姜洄" {
+		t.Errorf("歌名歌手异常: title=%q artist=%q", metadata.Title, metadata.Artist)
+	}
+	if metadata.Position != 54000000 || metadata.Duration != 153000000 {
+		t.Errorf("位置时长异常: position=%d duration=%d", metadata.Position, metadata.Duration)
+	}
+}
+
+func TestChooseMPRISPlayerPrefersPlaying(t *testing.T) {
+	// 空闲的浏览器排在前面，正在播放的 VLC 排在后面：必须选中 VLC。
+	chosen := chooseMPRISPlayer([]mprisPlayerData{
+		{name: "chromium.instance1", status: "Stopped"},
+		{name: "firefox.instance2", status: "Paused", metadata: &PlayerMetadata{Player: "firefox.instance2", Title: "暂停的歌"}},
+		{name: "vlc", status: "Playing", metadata: &PlayerMetadata{Player: "vlc", Title: "正在播放的歌"}},
+	})
+	if chosen == nil || chosen.Player != "vlc" {
+		t.Fatalf("应选择正在播放的播放器，got %#v", chosen)
+	}
+
+	// 都在播放时保留先出现的，避免歌词来源来回跳动。
+	chosen = chooseMPRISPlayer([]mprisPlayerData{
+		{name: "mpv", status: "Playing", metadata: &PlayerMetadata{Player: "mpv", Title: "第一首"}},
+		{name: "vlc", status: "Playing", metadata: &PlayerMetadata{Player: "vlc", Title: "第二首"}},
+	})
+	if chosen == nil || chosen.Player != "mpv" {
+		t.Fatalf("同状态应保留先出现的播放器，got %#v", chosen)
+	}
+
+	if chosen = chooseMPRISPlayer(nil); chosen != nil {
+		t.Fatalf("没有候选时应返回 nil, got %#v", chosen)
+	}
+}
+
+// TestMPRISMetadataAllowsMissingArtist 确认没有歌手时仍能按歌名搜索。
+func TestMPRISMetadataAllowsMissingArtist(t *testing.T) {
+	metadata, _, ok := metadataFromMPRISProps(mprisProps("Playing", map[string]dbus.Variant{
+		"xesam:title":  dbus.MakeVariant("晴天"),
+		"xesam:artist": dbus.MakeVariant([]string{""}),
+	}), "firefox.instance_1_5561")
+	if !ok || metadata.Artist != "" || metadata.Title != "晴天" {
+		t.Fatalf("缺少歌手时应保留歌名: ok=%t metadata=%#v", ok, metadata)
+	}
+	if text := buildText(metadata); text != "晴天" {
+		t.Fatalf("缺少歌手时显示 = %q, want 晴天", text)
+	}
+}
+
+func TestSearchSongWithoutArtist(t *testing.T) {
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		gotQuery = request.URL.Query().Get("s")
+		_, _ = writer.Write([]byte(`{"code":200,"result":{"songs":[{"id":123}]}}`))
+	}))
+	defer server.Close()
+
+	restore163 := base_163
+	base_163 = server.URL
+	t.Cleanup(func() { base_163 = restore163 })
+
+	if id := searchSong("譬如我", ""); id != "123" {
+		t.Fatalf("按歌名搜索的 ID = %q, want 123", id)
+	}
+	if gotQuery != "譬如我" {
+		t.Fatalf("缺少歌手时搜索词应只有歌名，got %q", gotQuery)
+	}
+}
+
+// TestGetMPRISMetadataIgnoresIdlePlayer 在真实会话总线上导出一台“空闲 Chromium”——
+// 它常驻注册 MPRIS 但 Metadata 里只有时长，并且在 ListNames 里常常排在真正播放的播放器
+// 前面。旧实现直接取第一个匹配项，于是判成“播放器不可用”；这里验证 getMPRISMetadata
+// 不会把它当成播放中的曲目。
+func TestGetMPRISMetadataIgnoresIdlePlayer(t *testing.T) {
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		t.Skipf("跳过：没有可用的会话总线（%v）", err)
+	}
+	defer conn.Close()
+
+	const shortName = "waybar-lyrics-idle-test"
+	const busName = "org.mpris.MediaPlayer2." + shortName
+	reply, err := conn.RequestName(busName, dbus.NameFlagDoNotQueue)
+	if err != nil || reply != dbus.RequestNameReplyPrimaryOwner {
+		t.Skipf("跳过：无法注册模拟播放器（%v, %v）", reply, err)
+	}
+	t.Cleanup(func() { _, _ = conn.ReleaseName(busName) })
+
+	idle := &fakeMPRISPlayer{props: mprisProps("Stopped", map[string]dbus.Variant{
+		"mpris:length": dbus.MakeVariant(int64(0)),
+	})}
+	if err := conn.Export(idle, "/org/mpris/MediaPlayer2", "org.freedesktop.DBus.Properties"); err != nil {
+		t.Fatalf("导出模拟播放器失败: %v", err)
+	}
+
+	metadata := getMPRISMetadata("mpris")
+	if metadata == nil {
+		return // 机器上没有正在播放的播放器：正是期望结果
+	}
+	if metadata.Player == shortName {
+		t.Fatalf("空闲播放器被当成了播放中的曲目: %#v", metadata)
+	}
+	// 本机确实有其他播放器在播放时，结果可能就是它的歌词，测试让位给真实环境。
+	t.Logf("环境中有其他播放器在播放（%s / %s），跳过断言", metadata.Player, metadata.Title)
 }

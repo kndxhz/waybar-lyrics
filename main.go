@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -832,159 +833,332 @@ func buildCurrentLyricText(metadata *PlayerMetadata, lyrics *ParsedLyrics) strin
 	return original + "\n" + translation
 }
 
-// getPlayerMetadata 通过 D-Bus MPRIS 接口获取播放器元数据
+// mprisBusPrefix 是 MPRIS 播放器在会话总线上的服务名前缀。
+const mprisBusPrefix = "org.mpris.MediaPlayer2."
+
+// mprisPlayerData 是一台 MPRIS 播放器的读取结果，用于在多个播放器之间挑选。
+type mprisPlayerData struct {
+	name     string // 播放器短名，如 vlc、firefox.instance_1_2
+	status   string // PlaybackStatus：Playing、Paused 等
+	metadata *PlayerMetadata
+}
+
+// getMPRISMetadata 通过 D-Bus MPRIS 接口获取播放器元数据。
+// 浏览器等播放器即使没有在播放也会常驻注册 MPRIS 服务，Metadata 里只有时长没有歌名，
+// 而 ListNames 的返回顺序并不代表谁在播放，因此不能直接取第一个匹配项：
+// 必须遍历所有符合模式的播放器，跳过读不到歌名的服务，并优先选择正在播放的那个。
 func getMPRISMetadata(preferred string) *PlayerMetadata {
-	// 连接到 D-Bus
 	conn, err := dbus.SessionBus()
 	if err != nil {
 		return nil
 	}
 	defer conn.Close()
 
-	// 查找所有 MPRIS 播放器服务
 	var names []string
-	err = conn.BusObject().Call("org.freedesktop.DBus.ListNames", 0).Store(&names)
-	if err != nil {
+	if err := conn.BusObject().Call("org.freedesktop.DBus.ListNames", 0).Store(&names); err != nil {
 		return nil
 	}
 
-	var mediaPlayer dbus.BusObject
-	var playerName string
-	var foundPlayer bool
+	mode := preferred
+	if mode == "" {
+		mode = "mpris"
+	}
 
-	var targetPlayer string
-	// 按模式选择播放器：旧 SPlayer 不回退到其他 MPRIS，普通 MPRIS 排除 SPlayer。
+	var candidates []mprisPlayerData
 	for _, name := range names {
-		if !strings.HasPrefix(name, "org.mpris.MediaPlayer2.") {
+		if !strings.HasPrefix(name, mprisBusPrefix) {
 			continue
 		}
-		shortName := strings.TrimPrefix(name, "org.mpris.MediaPlayer2.")
-		mode := preferred
-		if mode == "" {
-			mode = "mpris"
+		shortName := strings.TrimPrefix(name, mprisBusPrefix)
+		// 按模式选择播放器：旧 SPlayer 不回退到其他 MPRIS，普通 MPRIS 排除 SPlayer。
+		if !matchesPlayerMode(shortName, mode) {
+			continue
 		}
-		if matchesPlayerMode(shortName, mode) {
-			targetPlayer = name
-			break
+		metadata, status, ok := readMPRISPlayer(conn, name, shortName)
+		if !ok {
+			continue
 		}
+		candidates = append(candidates, mprisPlayerData{name: shortName, status: status, metadata: metadata})
 	}
 
-	if targetPlayer != "" {
-		mediaPlayer = conn.Object(targetPlayer, "/org/mpris/MediaPlayer2")
-		playerName = strings.TrimPrefix(targetPlayer, "org.mpris.MediaPlayer2.")
-		foundPlayer = true
+	return chooseMPRISPlayer(candidates)
+}
+
+// chooseMPRISPlayer 在候选播放器里挑一个：正在播放优先，其次暂停，
+// 同一状态保留先出现的那个。没有可用候选时返回 nil。
+func chooseMPRISPlayer(candidates []mprisPlayerData) *PlayerMetadata {
+	var best *PlayerMetadata
+	bestRank := 0
+	for _, candidate := range candidates {
+		if candidate.metadata == nil || candidate.metadata.Title == "" {
+			continue
+		}
+		rank := mprisStatusRank(candidate.status)
+		if best == nil || rank < bestRank {
+			best, bestRank = candidate.metadata, rank
+		}
+	}
+	return best
+}
+
+// mprisStatusRank 把 PlaybackStatus 折算成优先级，数值越小越优先。
+func mprisStatusRank(status string) int {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "playing":
+		return 0
+	case "paused":
+		return 1
+	default:
+		return 2
+	}
+}
+
+// readMPRISPlayer 读取单个播放器的元数据。没有可用歌名（未播放、没有曲目、
+// 或只有占位标题）时返回 ok=false，让调用方继续尝试其他播放器。
+func readMPRISPlayer(conn *dbus.Conn, busName, playerName string) (*PlayerMetadata, string, bool) {
+	var props map[string]dbus.Variant
+	err := conn.Object(busName, "/org/mpris/MediaPlayer2").
+		Call("org.freedesktop.DBus.Properties.GetAll", 0, "org.mpris.MediaPlayer2.Player").Store(&props)
+	if err != nil {
+		return nil, "", false
 	}
 
-	if !foundPlayer {
-		return nil
+	return metadataFromMPRISProps(props, playerName)
+}
+
+// metadataFromMPRISProps 把 GetAll 拿到的属性转换成元数据。
+// 各播放器给出的字段差异很大（Chromium 有完整的标题歌手，Firefox 只有网页标题，
+// mpv 播放网络流时只有 xesam:url，Telegram 只有语音消息占位标题），
+// 统一在这里清洗，读不到可用歌名时返回 ok=false。
+func metadataFromMPRISProps(props map[string]dbus.Variant, playerName string) (*PlayerMetadata, string, bool) {
+	metadataMap, ok := props["Metadata"].Value().(map[string]dbus.Variant)
+	if !ok || len(metadataMap) == 0 {
+		return nil, "", false
 	}
 
 	metadata := &PlayerMetadata{
-		Player: playerName,
-		Title:  "",
-		Artist: "",
-		Album:  "",
+		Player:  playerName,
+		TrackID: mprisString(metadataMap["mpris:trackid"]),
+		Title:   mprisString(metadataMap["xesam:title"]),
+		// Chromium / Edge 等会把多个歌手放进列表，拼起来显示和搜索都更准。
+		Artist: mprisJoinedString(metadataMap["xesam:artist"], ", "),
+		Album:  mprisString(metadataMap["xesam:album"]),
+		ArtUrl: mprisString(metadataMap["mpris:artUrl"]),
+	}
+	if length, ok := mprisInt64(metadataMap["mpris:length"]); ok {
+		metadata.Duration = length
+	}
+	if position, ok := mprisInt64(props["Position"]); ok {
+		metadata.Position = position
 	}
 
-	// 获取元数据 - 使用 GetAll 获取所有属性
-	var allProps map[string]dbus.Variant
-	err = mediaPlayer.Call("org.freedesktop.DBus.Properties.GetAll", 0, "org.mpris.MediaPlayer2.Player").Store(&allProps)
-	if err != nil {
-		return nil
+	// 网络流和语音消息通常只在 xesam:url 里带文件名，歌名为空时用它兜底。
+	if !normalizeMPRISMetadata(metadata, mprisString(metadataMap["xesam:url"])) {
+		return nil, "", false
 	}
+	return metadata, mprisString(props["PlaybackStatus"]), true
+}
 
-	// 从 Metadata 属性中获取元数据
-	var metadata_map map[string]dbus.Variant
-	if metadataVar, ok := allProps["Metadata"]; ok {
-		if m, ok := metadataVar.Value().(map[string]dbus.Variant); ok {
-			metadata_map = m
+// mprisStrings 取出属性里的全部非空字符串。同一个属性在不同播放器里可能是
+// 字符串、字符串列表甚至 ObjectPath；列表里还可能出现空字符串
+// （Firefox 播放本地文件时 xesam:artist 就是一个只含空串的列表）。
+func mprisStrings(value dbus.Variant) []string {
+	var values []string
+	appendValue := func(text string) {
+		if text = strings.TrimSpace(text); text != "" {
+			values = append(values, text)
 		}
 	}
-
-	if metadata_map == nil {
-		return nil
-	}
-
-	if val, ok := allProps["Position"]; ok {
-		if pos, ok := val.Value().(int64); ok {
-			metadata.Position = pos
+	switch v := value.Value().(type) {
+	case string:
+		appendValue(v)
+	case dbus.ObjectPath:
+		appendValue(string(v))
+	case []string:
+		for _, item := range v {
+			appendValue(item)
 		}
-	}
-
-	// 解析元数据
-	if val, ok := metadata_map["mpris:trackid"]; ok {
-		if trackid, ok := val.Value().(dbus.ObjectPath); ok {
-			metadata.TrackID = string(trackid)
-		}
-	}
-
-	// 处理 xesam:title - 可能是 string 或 []string
-	if val, ok := metadata_map["xesam:title"]; ok {
-		v := val.Value()
-		switch v := v.(type) {
-		case string:
-			metadata.Title = v
-		case []string:
-			if len(v) > 0 {
-				metadata.Title = v[0]
-			}
-		case []interface{}:
-			if len(v) > 0 {
-				if str, ok := v[0].(string); ok {
-					metadata.Title = str
-				}
+	case []interface{}:
+		for _, item := range v {
+			if text, ok := item.(string); ok {
+				appendValue(text)
 			}
 		}
 	}
+	return values
+}
 
-	// 处理 xesam:artist - 可能是 string 或 []string
-	if val, ok := metadata_map["xesam:artist"]; ok {
-		v := val.Value()
-		switch v := v.(type) {
-		case string:
-			metadata.Artist = v
-		case []string:
-			if len(v) > 0 {
-				metadata.Artist = v[0]
-			}
-		case []interface{}:
-			if len(v) > 0 {
-				if str, ok := v[0].(string); ok {
-					metadata.Artist = str
-				}
-			}
+// mprisString 取第一个非空字符串，用于歌名、专辑这类单值属性。
+func mprisString(value dbus.Variant) string {
+	values := mprisStrings(value)
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+// mprisJoinedString 把列表属性拼成一个字符串，用于多个歌手。
+func mprisJoinedString(value dbus.Variant, separator string) string {
+	return strings.Join(mprisStrings(value), separator)
+}
+
+// mprisInt64 读取 MPRIS 的整数属性。规范要求 int64，但有些播放器返回 uint64。
+func mprisInt64(value dbus.Variant) (int64, bool) {
+	switch v := value.Value().(type) {
+	case int64:
+		return v, true
+	case uint64:
+		return int64(v), true
+	case int32:
+		return int64(v), true
+	case uint32:
+		return int64(v), true
+	case int:
+		return int64(v), true
+	}
+	return 0, false
+}
+
+// audioFileExtension 本地文件、网络流和语音消息的歌名会带上扩展名，
+// 不去掉就搜不到歌词（也可能搜到别的东西）。
+var audioFileExtension = regexp.MustCompile(`(?i)\.(flac|mp3|m4a|aac|ogg|oga|opus|wav|wma|aiff?|ape|wv|dsf|dff|mka|webm|mp4|m4v|mkv|mov|avi|ts|m3u8?|pls|xspf)$`)
+
+// browserTitleSuffixes 浏览器把网页标题直接当作歌名，需要去掉站点后缀。
+var browserTitleSuffixes = []string{
+	" - YouTube Music",
+	" - YouTube",
+	" - Spotify",
+	" | Spotify",
+	" - SoundCloud",
+	" - 哔哩哔哩",
+	" - bilibili",
+}
+
+// leadingTrackNumber 文件名里的音轨号，例如 "01 - 歌手 - 歌名.flac" 的前缀。
+var leadingTrackNumber = regexp.MustCompile(`^\d{1,3}\s*[.\-]\s+`)
+
+// mprisPlaceholderTitles 播放器没有曲目信息时给出的占位标题，
+// 拿这些去搜索只会得到不相干的歌词，应当视为“没有歌名”。
+var mprisPlaceholderTitles = []string{
+	"unknown",
+	"unknown track",
+	"unknown title",
+	"no title",
+	"untitled",
+	"voice message",
+	"video message",
+	"未知曲目",
+	"未知",
+	"语音消息",
+	"视频消息",
+}
+
+// normalizeMPRISMetadata 修正播放器给的歌名和歌手，返回是否得到了可用歌名。
+// 本地文件、浏览器和网络流的标题往往是文件名或网页标题（"歌手 - 歌名.flac"、
+// "歌名 - YouTube Music"），歌手字段还可能是空字符串。不清洗就会拿着
+// 整个文件名去搜索，结果一条歌词都查不到。
+func normalizeMPRISMetadata(metadata *PlayerMetadata, mediaURL string) bool {
+	metadata.Artist = strings.TrimSpace(metadata.Artist)
+	metadata.Album = strings.TrimSpace(metadata.Album)
+
+	title := cleanMPRISTitle(metadata.Title)
+	if title == "" && mediaURL != "" {
+		// mpv 播放网络流时歌名常常是空的，只能从 xesam:url 的文件名推断。
+		// 占位标题（如 Telegram 的“语音消息”）不算空，不能拿 URL 里的
+		// voice_messages_1 这类文件名去搜索。
+		title = cleanMPRISTitle(fileNameFromURL(mediaURL))
+	}
+
+	// 播放器没有提供歌手时，尝试从 "歌手 - 歌名" 形式的标题里拆出来，
+	// 顺带去掉文件名开头的音轨号。
+	if metadata.Artist == "" {
+		if artist, name, ok := splitTitleArtist(leadingTrackNumber.ReplaceAllString(title, "")); ok {
+			metadata.Artist, title = artist, name
 		}
 	}
 
-	if val, ok := metadata_map["xesam:album"]; ok {
-		if album, ok := val.Value().(string); ok {
-			metadata.Album = album
+	metadata.Title = title
+	return usableMPRISTitle(title, metadata.Player)
+}
+
+// usableMPRISTitle 判断歌名是否可用于显示和搜索。
+func usableMPRISTitle(title, playerName string) bool {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return false
+	}
+	lower := strings.ToLower(title)
+	for _, placeholder := range mprisPlaceholderTitles {
+		if lower == placeholder {
+			return false
 		}
 	}
+	// VLC 等播放器在没有曲目时会把播放器名当歌名。
+	base := strings.SplitN(playerName, ".", 2)[0]
+	return !strings.EqualFold(title, playerName) && !strings.EqualFold(title, base)
+}
 
-	if val, ok := metadata_map["mpris:length"]; ok {
-		if length, ok := val.Value().(int64); ok {
-			metadata.Duration = length
+// cleanMPRISTitle 去掉 URL、文件名扩展名和网页标题后缀，得到可搜索的歌名。
+func cleanMPRISTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if looksLikeURL(title) {
+		title = fileNameFromURL(title)
+	}
+	title = strings.TrimSpace(audioFileExtension.ReplaceAllString(title, ""))
+	for _, suffix := range browserTitleSuffixes {
+		if len(title) > len(suffix) && strings.EqualFold(title[len(title)-len(suffix):], suffix) {
+			title = strings.TrimSpace(title[:len(title)-len(suffix)])
+			break
 		}
 	}
+	return strings.TrimSpace(title)
+}
 
-	if val, ok := metadata_map["mpris:artUrl"]; ok {
-		if artUrl, ok := val.Value().(string); ok {
-			metadata.ArtUrl = artUrl
-		}
+// looksLikeURL 判断播放器是不是直接把播放地址当成了歌名。
+func looksLikeURL(value string) bool {
+	return strings.Contains(value, "://") && !strings.ContainsAny(value, " \t")
+}
+
+// fileNameFromURL 从 xesam:url 里取出文件名（含扩展名，保留给后续清洗）。
+func fileNameFromURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
 	}
-
-	if metadata.Title == "" || metadata.Artist == "" {
-		return nil
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Path == "" {
+		return ""
 	}
+	name := path.Base(parsed.Path)
+	if unescaped, err := url.PathUnescape(name); err == nil {
+		name = unescaped
+	}
+	if name == "/" || name == "." {
+		return ""
+	}
+	return name
+}
 
-	return metadata
+// splitTitleArtist 按第一个 " - " 拆分标题；拆完任一侧为空时放弃，
+// 避免把本来就是歌名的标题拆坏。
+func splitTitleArtist(title string) (string, string, bool) {
+	const separator = " - "
+	index := strings.Index(title, separator)
+	if index <= 0 {
+		return "", "", false
+	}
+	artist := strings.TrimSpace(title[:index])
+	name := strings.TrimSpace(title[index+len(separator):])
+	if artist == "" || name == "" {
+		return "", "", false
+	}
+	return artist, name, true
 }
 
 // searchSong 搜索歌曲，返回歌曲ID
 func searchSong(title, artist string) string {
-	// 构建搜索词：艺术家 标题
-	query := artist + " " + title
+	// 构建搜索词：艺术家 标题；播放器没有歌手时只用标题。
+	query := strings.TrimSpace(artist + " " + title)
 
 	// 调用网易云搜索API
 	encodedQuery := url.QueryEscape(query)
