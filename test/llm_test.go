@@ -149,7 +149,9 @@ func TestApplyLLMExtractionOverridesTitle(t *testing.T) {
 	text := "xesam:title 洛天依Official,姜洄 - 譬如我.flac\nmpris:length 153000000"
 
 	metadata := rawMetadata()
-	applyLLMExtraction(metadata, text)
+	if !applyLLMExtraction(metadata, text) {
+		t.Fatal("识别为歌曲时应保留元数据")
+	}
 	if metadata.Title != "譬如我" || metadata.Artist != "洛天依Official, 姜洄" {
 		t.Fatalf("metadata = %+v", metadata)
 	}
@@ -169,7 +171,9 @@ func TestApplyLLMExtractionSingerNullSearchesTitleOnly(t *testing.T) {
 	configureLLMTest(t, server.URL)
 
 	metadata := &PlayerMetadata{Player: "vlc.instance1", Title: "洛天依Official,姜洄 - 譬如我.flac", Artist: "洛天依Official, 姜洄"}
-	applyLLMExtraction(metadata, "xesam:title 洛天依Official,姜洄 - 譬如我.flac")
+	if !applyLLMExtraction(metadata, "xesam:title 洛天依Official,姜洄 - 譬如我.flac") {
+		t.Fatal("识别为歌曲时应保留元数据")
+	}
 
 	if metadata.Title != "譬如我" || metadata.Artist != "" {
 		t.Fatalf("metadata = %+v", metadata)
@@ -184,7 +188,9 @@ func TestApplyLLMExtractionKeepsTitleOnFailure(t *testing.T) {
 	configureLLMTest(t, server.URL)
 
 	metadata := &PlayerMetadata{Player: "firefox.instance1", Title: "原始标题", Artist: "原始歌手"}
-	applyLLMExtraction(metadata, "xesam:title 原始标题")
+	if !applyLLMExtraction(metadata, "xesam:title 原始标题") {
+		t.Fatal("接口失败时不应丢弃元数据")
+	}
 	applyLLMExtraction(metadata, "xesam:title 原始标题")
 
 	if metadata.Title != "原始标题" || metadata.Artist != "原始歌手" {
@@ -196,14 +202,16 @@ func TestApplyLLMExtractionKeepsTitleOnFailure(t *testing.T) {
 	}
 }
 
-func TestApplyLLMExtractionKeepsTitleForNonSong(t *testing.T) {
+func TestApplyLLMExtractionRejectsNonSong(t *testing.T) {
 	server, _ := newLLMServer(t, "xesam:title 语音消息", `{"is_song":false}`, http.StatusOK)
 	configureLLMTest(t, server.URL)
 
 	metadata := &PlayerMetadata{Player: "telegram.instance1", Title: "语音消息", Artist: "张三"}
-	applyLLMExtraction(metadata, "xesam:title 语音消息")
+	if applyLLMExtraction(metadata, "xesam:title 语音消息") {
+		t.Fatal("非歌曲应返回 false，按没识别到歌曲处理")
+	}
 	if metadata.Title != "语音消息" || metadata.Artist != "张三" {
-		t.Fatalf("非歌曲应走原有逻辑：%+v", metadata)
+		t.Fatalf("非歌曲时不应改动元数据：%+v", metadata)
 	}
 }
 
@@ -212,7 +220,9 @@ func TestApplyLLMExtractionSkipsEmptyMetadata(t *testing.T) {
 	configureLLMTest(t, server.URL)
 
 	metadata := &PlayerMetadata{Player: "vlc.instance1", Title: "歌名"}
-	applyLLMExtraction(metadata, "   ")
+	if !applyLLMExtraction(metadata, "   ") {
+		t.Fatal("空元数据不应丢弃元数据")
+	}
 	if got := atomic.LoadInt32(calls); got != 0 {
 		t.Fatalf("空元数据不应请求 LLM，got %d", got)
 	}
@@ -296,9 +306,21 @@ func TestApplyLLMExtractionLogsOncePerTrack(t *testing.T) {
 		return &PlayerMetadata{Player: "telegram.instance1", Title: "语音消息"}
 	}
 	for i := 0; i < 3; i++ {
-		applyLLMExtraction(rawMetadata(), "xesam:title 语音消息")
+		if applyLLMExtraction(rawMetadata(), "xesam:title 语音消息") {
+			t.Fatal("非歌曲应返回 false")
+		}
 	}
 	if got := strings.Count(buf.String(), "不是歌曲"); got != 1 {
 		t.Fatalf("同一首歌只应记一次日志，got %d 次：%s", got, buf.String())
+	}
+}
+
+func TestReadMPRISPlayerSkipsNonSong(t *testing.T) {
+	server, _ := newLLMServer(t, "xesam:title 语音消息", `{"is_song":false}`, http.StatusOK)
+	configureLLMTest(t, server.URL)
+
+	conn := fakeMPRIS(t, "org.mpris.MediaPlayer2.llmnonsong", "语音消息", "张三", "Playing")
+	if _, _, ok := readMPRISPlayer(conn, "org.mpris.MediaPlayer2.llmnonsong", "llmnonsong"); ok {
+		t.Fatal("LLM 判定非歌曲时应按没识别到歌曲处理")
 	}
 }

@@ -212,13 +212,14 @@ func llmExtractionFor(key, metadataText string) (llmExtraction, error, bool) {
 }
 
 // applyLLMExtraction 用 LLM 从元数据文本里提取歌名与歌手。
-// 非歌曲、请求失败、输出无法解析时都保留原始标题，按原有逻辑继续搜索。
-func applyLLMExtraction(metadata *PlayerMetadata, metadataText string) {
+// 返回 false 表示 LLM 判定这不是歌曲，调用方应按「没识别到歌曲」处理，
+// 不再用原始标题去搜索歌词；请求失败或输出无法解析时保留原始标题继续搜索。
+func applyLLMExtraction(metadata *PlayerMetadata, metadataText string) bool {
 	if metadata == nil {
-		return
+		return true
 	}
 	if strings.TrimSpace(metadataText) == "" {
-		return
+		return true
 	}
 	key := metadata.Player + "\x00" + metadata.Title + "\x00" + metadata.Artist
 	extraction, err, cached := llmExtractionFor(key, metadataText)
@@ -227,19 +228,20 @@ func applyLLMExtraction(metadata *PlayerMetadata, metadataText string) {
 		if !cached {
 			logEvent("WARN", "LLM 提取歌曲信息失败，改用原始标题「%s」搜索：%v", metadata.Title, err)
 		}
-		return
+		return true
 	}
 	if !extraction.IsSong {
 		if !cached {
-			logEvent("INFO", "LLM 判定该媒体不是歌曲，保留原始标题「%s」", metadata.Title)
+			logEvent("INFO", "LLM 判定该媒体不是歌曲，按未识别到歌曲处理：「%s」", metadata.Title)
 		}
-		return
+		return false
 	}
 	if !cached {
 		logEvent("DEBUG", "LLM 提取歌曲信息：歌名=%s 歌手=%s", extraction.Title, extraction.Singer)
 	}
 	metadata.Title = extraction.Title
 	metadata.Artist = extraction.Singer
+	return true
 }
 
 // mprisMetadataText 把已读到的 D-Bus 属性拼成文本，内容与 playerctl metadata
