@@ -1,6 +1,6 @@
 # Maintainer: kndxhz <kndxhz@163.com>
 pkgname=waybar-lyrics
-pkgver=1.4.2
+pkgver=1.5.0
 pkgrel=1
 pkgdesc="Waybar synchronized lyrics from MPRIS, SPlayer, and SPlayer-Next"
 arch=('x86_64')
@@ -11,7 +11,7 @@ makedepends=('go')
 optdepends=('playerctl: For media control support')
 conflicts=('waybar-lyrics-git')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
-sha256sums=('cc6e4779f60bfe139da13cba779e8754630f7dfb7124401c823a49c440cf5d5f')
+sha256sums=('31602c8772b4531308d62d855b56f552e269332fba2827bc4484ee58a2b85f2e')
 
 build() {
     cd "$srcdir/$pkgname-$pkgver"
