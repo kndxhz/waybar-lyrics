@@ -212,3 +212,47 @@ func TestConfigMigrationWriteError(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestConfigMPRISFallbackDefaultsToTrue(t *testing.T) {
+	path := migrationFile(t, "mode: splayer-next\nlog:\n  path: /tmp/wy.log\n  level: INFO\n")
+	got, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.MPRISFallback {
+		t.Fatalf("缺少 mpris-fallback 时应默认为 true，got %+v", got)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "mpris-fallback: true") {
+		t.Errorf("配置升级应补写 mpris-fallback: true，got %s", data)
+	}
+	// 再次读取不应重复写入或改动取值
+	again, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.MPRISFallback {
+		t.Fatalf("二次读取的 mpris-fallback 应为 true，got %+v", again)
+	}
+}
+
+func TestConfigMPRISFallbackKeepsExplicitFalse(t *testing.T) {
+	path := migrationFile(t, "mode: splayer\nmpris-fallback: false\n")
+	got, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.MPRISFallback {
+		t.Fatalf("显式关闭的 mpris-fallback 不应被改回 true，got %+v", got)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "mpris-fallback: false") {
+		t.Errorf("应保留 mpris-fallback: false，got %s", data)
+	}
+}

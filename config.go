@@ -14,9 +14,13 @@ import (
 )
 
 type AppConfig struct {
-	Mode    string        `yaml:"mode"`
-	SPlayer SPlayerConfig `yaml:"splayer"`
-	Log     LogConfig     `yaml:"log"`
+	Mode string `yaml:"mode"`
+	// MPRISFallback 仅在 splayer / splayer-next 模式下生效：
+	// SPlayer 的 API 连不通或读不到歌曲时，回退到 MPRIS 读取其他播放器的歌曲。
+	// mpris 模式本身就是 MPRIS，该配置没有意义，会被忽略。
+	MPRISFallback bool          `yaml:"mpris-fallback"`
+	SPlayer       SPlayerConfig `yaml:"splayer"`
+	Log           LogConfig     `yaml:"log"`
 }
 
 type LogConfig struct {
@@ -46,8 +50,9 @@ var appConfig = defaultConfig()
 
 func defaultConfig() AppConfig {
 	return AppConfig{
-		Mode: "mpris",
-		Log:  LogConfig{Path: "/tmp/waybar-lyrics.log", Level: "INFO"},
+		Mode:          "mpris",
+		MPRISFallback: true,
+		Log:           LogConfig{Path: "/tmp/waybar-lyrics.log", Level: "INFO"},
 		SPlayer: SPlayerConfig{
 			Address:    "127.0.0.1",
 			Port:       14558,

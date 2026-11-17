@@ -284,3 +284,54 @@ func TestExtractTrackID(t *testing.T) {
 		}
 	}
 }
+
+func TestMPRISFallbackEnabled(t *testing.T) {
+	tests := []struct {
+		mode    string
+		enabled bool
+		want    bool
+	}{
+		{"mpris", true, false},
+		{"mpris", false, false},
+		{"splayer", true, true},
+		{"splayer", false, false},
+		{"splayer-next", true, true},
+		{"splayer-next", false, false},
+	}
+	for _, test := range tests {
+		config := AppConfig{Mode: test.mode, MPRISFallback: test.enabled}
+		if got := mprisFallbackEnabled(config); got != test.want {
+			t.Errorf("mode=%s enabled=%t: mprisFallbackEnabled() = %t，want %t", test.mode, test.enabled, got, test.want)
+		}
+	}
+}
+
+func TestGetMPRISFallbackMetadataDisabled(t *testing.T) {
+	oldConfig := appConfig
+	appConfig = defaultConfig()
+	t.Cleanup(func() { appConfig = oldConfig })
+
+	appConfig.Mode = "splayer-next"
+	appConfig.MPRISFallback = false
+	if got := getMPRISFallbackMetadata(); got != nil {
+		t.Fatalf("关闭 mpris-fallback 后不应回退，got %+v", got)
+	}
+
+	appConfig.Mode = "mpris"
+	appConfig.MPRISFallback = true
+	if got := getMPRISFallbackMetadata(); got != nil {
+		t.Fatalf("mpris 模式下 mpris-fallback 应被忽略，got %+v", got)
+	}
+}
+
+func TestIsSPlayerNextMetadata(t *testing.T) {
+	if isSPlayerNextMetadata(nil) {
+		t.Error("nil 元数据不应视为 SPlayer-Next")
+	}
+	if isSPlayerNextMetadata(&PlayerMetadata{Player: "vlc"}) {
+		t.Error("MPRIS 播放器不应视为 SPlayer-Next")
+	}
+	if !isSPlayerNextMetadata(&PlayerMetadata{Player: "splayer-next"}) {
+		t.Error("splayer-next 元数据应被识别")
+	}
+}

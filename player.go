@@ -47,12 +47,44 @@ type splayerNextTrack struct {
 func getPlayerMetadata() *PlayerMetadata {
 	switch appConfig.Mode {
 	case "splayer-next":
-		return getSPlayerNextMetadata()
+		if metadata := getSPlayerNextMetadata(); metadata != nil {
+			return metadata
+		}
+		return getMPRISFallbackMetadata()
 	case "splayer":
-		return getMPRISMetadata("splayer")
+		if metadata := getMPRISMetadata("splayer"); metadata != nil {
+			return metadata
+		}
+		return getMPRISFallbackMetadata()
 	default:
 		return getMPRISMetadata("")
 	}
+}
+
+// mprisFallbackEnabled 判断某模式是否启用 MPRIS 回退。
+// mpris 模式本身就走 MPRIS，配置无意义，一律忽略。
+func mprisFallbackEnabled(config AppConfig) bool {
+	return config.Mode != "mpris" && config.MPRISFallback
+}
+
+// isSPlayerNextMetadata 判断元数据是否来自 SPlayer-Next 的 HTTP API。
+// MPRIS 回退得到的元数据不经过 HTTP API，因此不做网络延迟补偿，也不等待 API 歌词。
+func isSPlayerNextMetadata(metadata *PlayerMetadata) bool {
+	return metadata != nil && metadata.Player == "splayer-next"
+}
+
+// getMPRISFallbackMetadata 在 SPlayer 读不到歌曲时，按 mpris 模式的筛选规则
+// 读取其他播放器的元数据；关闭 mpris-fallback 后直接返回 nil。
+func getMPRISFallbackMetadata() *PlayerMetadata {
+	if !mprisFallbackEnabled(appConfig) {
+		return nil
+	}
+	metadata := getMPRISMetadata("")
+	if metadata == nil {
+		return nil
+	}
+	logEvent("DEBUG", "SPlayer 不可用，回退到 MPRIS 播放器：%s - %s", metadata.Artist, metadata.Title)
+	return metadata
 }
 
 func isPlayerCommand(command string) bool {

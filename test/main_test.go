@@ -245,37 +245,42 @@ func TestBuildCurrentLyricTextSPlayerNextLeadsByLatency(t *testing.T) {
 	lyrics := &ParsedLyrics{
 		Original: []TimedLyricLine{{TimeMs: 0, Text: "a"}, {TimeMs: 1000, Text: "b"}},
 	}
-	// 900ms 时原本还没到第二行；SPlayer-Next 提前 100ms 后应显示第二行。
-	metadata := &PlayerMetadata{Position: 900 * 1000}
-
-	appConfig.Mode = "mpris"
-	if got := buildCurrentLyricText(metadata, lyrics); got != "a" {
-		t.Errorf("mpris 模式不应提前歌词，got %q", got)
-	}
+	// 900ms 时原本还没到第二行；SPlayer-Next 的 API 进度提前 100ms 后应显示第二行。
+	apiMetadata := &PlayerMetadata{Player: "splayer-next", Position: 900 * 1000}
+	// MPRIS 回退读到的进度来自 D-Bus，不做网络延迟补偿。
+	mprisMetadata := &PlayerMetadata{Player: "vlc", Position: 900 * 1000}
 
 	appConfig.Mode = "splayer-next"
-	if got := buildCurrentLyricText(metadata, lyrics); got != "b" {
-		t.Errorf("splayer-next 模式应提前 100ms，got %q", got)
+	if got := buildCurrentLyricText(apiMetadata, lyrics); got != "b" {
+		t.Errorf("SPlayer-Next API 进度应提前 100ms，got %q", got)
+	}
+	if got := buildCurrentLyricText(mprisMetadata, lyrics); got != "a" {
+		t.Errorf("MPRIS 回退元数据不应提前歌词，got %q", got)
+	}
+
+	appConfig.Mode = "mpris"
+	if got := buildCurrentLyricText(mprisMetadata, lyrics); got != "a" {
+		t.Errorf("mpris 模式不应提前歌词，got %q", got)
 	}
 
 	// 自定义延迟生效
 	appConfig.SPlayer.LatencyMS = 200
-	metadata.Position = 800 * 1000
-	if got := buildCurrentLyricText(metadata, lyrics); got != "b" {
+	apiMetadata.Position = 800 * 1000
+	if got := buildCurrentLyricText(apiMetadata, lyrics); got != "b" {
 		t.Errorf("latency_ms=200 时应提前 200ms，got %q", got)
 	}
 
 	// 0 表示关闭补偿
 	appConfig.SPlayer.LatencyMS = 0
-	metadata.Position = 900 * 1000
-	if got := buildCurrentLyricText(metadata, lyrics); got != "a" {
+	apiMetadata.Position = 900 * 1000
+	if got := buildCurrentLyricText(apiMetadata, lyrics); got != "a" {
 		t.Errorf("latency_ms=0 时不应提前歌词，got %q", got)
 	}
 
 	// 负数表示延后：1000ms 时原本已到第二行，延后 100ms 后应仍显示第一行。
 	appConfig.SPlayer.LatencyMS = -100
-	metadata.Position = 1000 * 1000
-	if got := buildCurrentLyricText(metadata, lyrics); got != "a" {
+	apiMetadata.Position = 1000 * 1000
+	if got := buildCurrentLyricText(apiMetadata, lyrics); got != "a" {
 		t.Errorf("latency_ms=-100 时应延后 100ms，got %q", got)
 	}
 }
@@ -314,10 +319,11 @@ func TestShouldWaitForPlayerLyrics(t *testing.T) {
 		elapsed  time.Duration
 		want     bool
 	}{
-		{"splayer-next 切歌后等待", "splayer-next", &PlayerMetadata{}, 0, true},
-		{"splayer-next 等待期结束", "splayer-next", &PlayerMetadata{}, lyricAPIGracePeriod, false},
-		{"播放器歌词已就绪", "splayer-next", &PlayerMetadata{Lyrics: playerLyrics}, 0, false},
+		{"splayer-next 切歌后等待", "splayer-next", &PlayerMetadata{Player: "splayer-next"}, 0, true},
+		{"splayer-next 等待期结束", "splayer-next", &PlayerMetadata{Player: "splayer-next"}, lyricAPIGracePeriod, false},
+		{"播放器歌词已就绪", "splayer-next", &PlayerMetadata{Player: "splayer-next", Lyrics: playerLyrics}, 0, false},
 		{"普通 MPRIS 不等待", "mpris", &PlayerMetadata{}, 0, false},
+		{"SPlayer 回退到其他播放器不等待", "splayer-next", &PlayerMetadata{Player: "vlc"}, 0, false},
 	}
 	for _, test := range tests {
 		appConfig.Mode = test.mode

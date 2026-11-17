@@ -25,7 +25,7 @@ var base_lrclib = "https://lrclib.net"
 var base_ttml = "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/ncm-lyrics"
 
 // version 为当前发布版本，可用 -ldflags "-X main.version=…" 覆盖
-var version = "1.4.2"
+var version = "1.5.0"
 
 // 歌词来源标识，会追加到 Waybar tooltip 中
 const (
@@ -151,7 +151,10 @@ func main() {
 	}
 	defer logFile.Close()
 	configureLogLevel(appConfig.Log.Level)
-	logEvent("INFO", "程序启动: mode=%s latency_ms=%d", appConfig.Mode, appConfig.SPlayer.LatencyMS)
+	logEvent("INFO", "程序启动: mode=%s latency_ms=%d mpris_fallback=%t", appConfig.Mode, appConfig.SPlayer.LatencyMS, mprisFallbackEnabled(appConfig))
+	if appConfig.Mode == "mpris" && appConfig.MPRISFallback {
+		logEvent("WARN", "mpris 模式本身即 MPRIS，mpris-fallback 配置无效，已忽略")
+	}
 
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
@@ -353,7 +356,7 @@ func shouldRefreshAPILyrics(current *ParsedLyrics, metadata *PlayerMetadata, son
 
 // shouldWaitForPlayerLyrics 判断是否还应等待播放器自带歌词，暂时不要回退到外部源。
 func shouldWaitForPlayerLyrics(metadata *PlayerMetadata, songElapsed time.Duration) bool {
-	if appConfig.Mode != "splayer-next" || hasPlayerLyrics(metadata) {
+	if !isSPlayerNextMetadata(metadata) || hasPlayerLyrics(metadata) {
 		return false
 	}
 	return songElapsed < lyricAPIGracePeriod
@@ -809,7 +812,7 @@ func buildCurrentLyricText(metadata *PlayerMetadata, lyrics *ParsedLyrics) strin
 	}
 
 	positionMs := metadata.Position / 1000
-	if appConfig.Mode == "splayer-next" && appConfig.SPlayer.LatencyMS != 0 {
+	if isSPlayerNextMetadata(metadata) && appConfig.SPlayer.LatencyMS != 0 {
 		// 正数提前歌词以抵消 API 网络延迟；负数延后歌词，用于修正播放器进度偏快。
 		positionMs += int64(appConfig.SPlayer.LatencyMS)
 	}
@@ -859,7 +862,8 @@ func getMPRISMetadata(preferred string) *PlayerMetadata {
 	if err != nil {
 		return nil
 	}
-	defer conn.Close()
+	// 会话总线是进程内共享连接，关闭它会同时断开其他使用者（例如同一进程里
+	// 导出的假 MPRIS 服务），因此这里只复用、不关闭。
 
 	var names []string
 	if err := conn.BusObject().Call("org.freedesktop.DBus.ListNames", 0).Store(&names); err != nil {

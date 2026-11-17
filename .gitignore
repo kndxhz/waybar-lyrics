@@ -31,3 +31,12 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# 打包与发布产物
+pkg/
+src/
+*.pkg.tar.zst
+waybar-lyrics-*.tar.gz
+
+# 本地备份
+.modules.json.bak
