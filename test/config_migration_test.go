@@ -256,3 +256,62 @@ func TestConfigMPRISFallbackKeepsExplicitFalse(t *testing.T) {
 		t.Errorf("应保留 mpris-fallback: false，got %s", data)
 	}
 }
+
+func TestConfigLLMDefaultsMigrated(t *testing.T) {
+	path := migrationFile(t, "mode: mpris\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.LLM.Enable {
+		t.Error("llm.enable 默认应为 false")
+	}
+	if config.LLM.BaseURL != "https://api.deepseek.com/v1" || config.LLM.ModelName != "deepseek-flash" {
+		t.Errorf("llm 默认值不符：%+v", config.LLM)
+	}
+	if config.LLM.APIKey != "xxx" {
+		t.Errorf("api_key 默认值应写为 xxx，got %q", config.LLM.APIKey)
+	}
+	if !strings.Contains(config.LLM.Prompt, "{metadata}") {
+		t.Errorf("默认 Prompt 应包含占位符：%q", config.LLM.Prompt)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"llm:", "enable: false", "base_url:", "model_name: deepseek-flash", "api_key: xxx", "{metadata}"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("升级后的配置缺少 %q：\n%s", want, data)
+		}
+	}
+}
+
+func TestConfigLLMPreservesExplicitValues(t *testing.T) {
+	path := migrationFile(t, "mode: mpris\nllm:\n  enable: true\n  api_key: sk-real\n  prompt: |\n    自定义指令\n\n    {metadata}\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.LLM.Enable || config.LLM.APIKey != "sk-real" {
+		t.Fatalf("显式设置应保留：%+v", config.LLM)
+	}
+	if !strings.Contains(config.LLM.Prompt, "自定义指令") || !strings.Contains(config.LLM.Prompt, "{metadata}") {
+		t.Fatalf("自定义 Prompt 应保留：%q", config.LLM.Prompt)
+	}
+	// 缺失的字段补齐默认值。
+	if config.LLM.ModelName != "deepseek-flash" || config.LLM.BaseURL != "https://api.deepseek.com/v1" {
+		t.Fatalf("缺失字段应补默认值：%+v", config.LLM)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "api_key: sk-real") || strings.Contains(string(data), "自定义指令") == false {
+		t.Fatalf("写回的配置不符：\n%s", data)
+	}
+	if strings.Contains(string(data), "基于以下内容") {
+		t.Fatalf("不应覆盖用户 Prompt：\n%s", data)
+	}
+}

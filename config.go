@@ -20,6 +20,7 @@ type AppConfig struct {
 	// mpris 模式本身就是 MPRIS，该配置没有意义，会被忽略。
 	MPRISFallback bool          `yaml:"mpris-fallback"`
 	SPlayer       SPlayerConfig `yaml:"splayer"`
+	LLM           LLMConfig     `yaml:"llm"`
 	Log           LogConfig     `yaml:"log"`
 }
 
@@ -43,6 +44,46 @@ type SPlayerAPIConfig struct {
 	Port    int    `yaml:"port"`
 }
 
+// LLMConfig 配置可选的 LLM 歌曲信息提取，仅在 mpris 模式或 SPlayer 模式的
+// MPRIS 回退路径上生效；enable 为 false 时程序行为与之前完全一致。
+type LLMConfig struct {
+	Enable    bool   `yaml:"enable"`
+	BaseURL   string `yaml:"base_url"`
+	ModelName string `yaml:"model_name"`
+	APIKey    string `yaml:"api_key"`
+	Prompt    string `yaml:"prompt"`
+}
+
+// defaultLLMPrompt 是默认提取指令，{metadata} 会被替换为 MPRIS 元数据文本。
+const defaultLLMPrompt = `基于以下内容，如果这个媒体是歌曲，提取这个媒体的歌名，输出{"title":"歌名","singer":"歌手"}，歌名不要包含歌手，歌手如果数据内没有，不要瞎猜，只需要输出为null。如果不是歌曲，输出{"is_song":false}
+
+{metadata}`
+
+// MarshalYAML 让默认 Prompt 以多行文本（|）写入配置文件，
+// 否则含引号和换行的 Prompt 会被转义成一行，用户难以编辑。
+func (c LLMConfig) MarshalYAML() (any, error) {
+	prompt := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: c.Prompt}
+	if strings.Contains(c.Prompt, "\n") {
+		prompt.Style = yaml.LiteralStyle
+	}
+	pair := func(key, tag, value string) []*yaml.Node {
+		return []*yaml.Node{
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+			{Kind: yaml.ScalarNode, Tag: tag, Value: value},
+		}
+	}
+	content := []*yaml.Node{}
+	content = append(content, pair("enable", "!!bool", strconv.FormatBool(c.Enable))...)
+	content = append(content, pair("base_url", "!!str", c.BaseURL)...)
+	content = append(content, pair("model_name", "!!str", c.ModelName)...)
+	content = append(content, pair("api_key", "!!str", c.APIKey)...)
+	content = append(content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "prompt"},
+		prompt,
+	)
+	return &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: content}, nil
+}
+
 // defaultLyricLatencyMS 歌词默认提前量，用于抵消 SPlayer-Next API 的网络延迟。
 const defaultLyricLatencyMS = 300
 
@@ -58,6 +99,13 @@ func defaultConfig() AppConfig {
 			Port:       14558,
 			SongIDMode: "auto",
 			LatencyMS:  defaultLyricLatencyMS,
+		},
+		LLM: LLMConfig{
+			Enable:    false,
+			BaseURL:   "https://api.deepseek.com/v1",
+			ModelName: "deepseek-flash",
+			APIKey:    "xxx",
+			Prompt:    defaultLLMPrompt,
 		},
 	}
 }

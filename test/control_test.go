@@ -240,6 +240,13 @@ func (recorder *controlAPIRecorder) assert(t *testing.T, want ...string) {
 	}
 }
 
+// disableControlFallback 关闭 mpris-fallback，让下面的用例只验证 SPlayer-Next
+// 与 MPRIS 自身的失败语义，不受 playerctl 回退影响。
+func disableControlFallback(t *testing.T) {
+	t.Helper()
+	appConfig.MPRISFallback = false
+}
+
 func TestControlPlayerSPlayerNextCommands(t *testing.T) {
 	for _, test := range []struct{ command, path string }{
 		{"play", "play"}, {"pause", "pause"}, {"next", "next"},
@@ -284,7 +291,7 @@ func TestControlPlayerSPlayerNextPlayPause(t *testing.T) {
 	}
 }
 
-func TestControlPlayerSPlayerNextErrorsNeverFallback(t *testing.T) {
+func TestControlPlayerSPlayerNextErrorsWhenFallbackDisabled(t *testing.T) {
 	for _, test := range []struct {
 		name, command, body string
 		status              int
@@ -311,6 +318,7 @@ func TestControlPlayerSPlayerNextErrorsNeverFallback(t *testing.T) {
 				_, _ = io.WriteString(w, test.body)
 			})
 			configureControlTest(t, "splayer-next", server.URL)
+			disableControlFallback(t)
 			if err := controlPlayer(test.command); err == nil {
 				t.Fatal("invalid API response should return an error")
 			}
@@ -338,6 +346,7 @@ func TestControlPlayerSPlayerNextToggleActionFailure(t *testing.T) {
 		_, _ = io.WriteString(w, `{"ok":false}`)
 	})
 	configureControlTest(t, "splayer-next", server.URL)
+	disableControlFallback(t)
 	if err := controlPlayer("play-pause"); err == nil {
 		t.Fatal("failed toggle action should return an error")
 	}
@@ -350,6 +359,7 @@ func TestControlPlayerSPlayerNextTransportFailure(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	server.Close()
 	configureControlTest(t, "splayer-next", server.URL)
+	disableControlFallback(t)
 	for _, command := range []string{"play", "play-pause"} {
 		if err := controlPlayer(command); err == nil {
 			t.Errorf("controlPlayer(%q) should report a connection error", command)
@@ -411,6 +421,7 @@ func TestControlPlayerMPRISErrorsNeverUseHTTP(t *testing.T) {
 				_, _ = io.WriteString(w, `{"ok":true}`)
 			})
 			configureControlTest(t, test.mode, server.URL)
+			disableControlFallback(t)
 			if err := controlPlayer("play"); err == nil {
 				t.Fatal("missing player or failed subprocess should return an error")
 			}

@@ -10,7 +10,7 @@ import (
 // fakeMPRIS 在会话总线上注册一台假的 MPRIS 播放器，用于验证
 // getMPRISMetadata 与 SPlayer 模式的 MPRIS 回退。
 // 没有会话总线（例如 CI 或纯终端）时跳过测试。
-func fakeMPRIS(t *testing.T, name, title, artist, status string) {
+func fakeMPRIS(t *testing.T, name, title, artist, status string) *dbus.Conn {
 	t.Helper()
 	conn, err := dbus.SessionBusPrivate()
 	if err != nil {
@@ -52,6 +52,7 @@ func fakeMPRIS(t *testing.T, name, title, artist, status string) {
 	if _, err := prop.Export(conn, "/org/mpris/MediaPlayer2", properties); err != nil {
 		t.Skipf("导出 MPRIS 属性失败：%v", err)
 	}
+	return conn
 }
 
 func TestGetMPRISMetadataReadsPlayer(t *testing.T) {

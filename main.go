@@ -25,7 +25,7 @@ var base_lrclib = "https://lrclib.net"
 var base_ttml = "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/ncm-lyrics"
 
 // version 为当前发布版本，可用 -ldflags "-X main.version=…" 覆盖
-var version = "1.5.0"
+var version = "1.5.1"
 
 // 歌词来源标识，会追加到 Waybar tooltip 中
 const (
@@ -934,7 +934,15 @@ func readMPRISPlayer(conn *dbus.Conn, busName, playerName string) (*PlayerMetada
 		return nil, "", false
 	}
 
-	return metadataFromMPRISProps(props, playerName)
+	metadata, status, ok := metadataFromMPRISProps(props, playerName)
+	if !ok {
+		return nil, "", false
+	}
+	// MPRIS 模式下取到的标题往往只是文件名或网页标题，启用 LLM 时用它提取歌名歌手。
+	if llmEnabled(appConfig) {
+		applyLLMExtraction(metadata, mprisMetadataText(props))
+	}
+	return metadata, status, true
 }
 
 // metadataFromMPRISProps 把 GetAll 拿到的属性转换成元数据。

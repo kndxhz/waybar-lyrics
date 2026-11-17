@@ -102,21 +102,50 @@ func matchesPlayerMode(name, mode string) bool {
 	return (mode == "splayer" && isSPlayer) || (mode == "mpris" && !isSPlayer)
 }
 
-// controlPlayer 是一次性控制入口；API 失败时不回退到其他播放器。
+// controlPlayer 是一次性控制入口。SPlayer 读不到（API 失败、找不到 SPlayer）
+// 且启用 mpris-fallback 时，控制命令与歌词读取一样回退到 playerctl 控制其他播放器。
 func controlPlayer(command string) error {
 	if !isPlayerCommand(command) {
 		return fmt.Errorf("不支持的控制命令：%s", command)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	switch appConfig.Mode {
 	case "splayer-next":
-		return controlSPlayerNext(ctx, command)
-	case "mpris", "splayer":
-		return controlWithPlayerctl(ctx, command)
+		err := controlSPlayerNext(ctx, command)
+		if err == nil {
+			return nil
+		}
+		if controlPlayerctlFallback(ctx, err, command) == nil {
+			return nil
+		}
+		return err
+	case "splayer":
+		err := controlPlayerctlInMode(ctx, "splayer", command)
+		if err == nil {
+			return nil
+		}
+		if controlPlayerctlFallback(ctx, err, command) == nil {
+			return nil
+		}
+		return err
+	case "mpris":
+		return controlPlayerctlInMode(ctx, "mpris", command)
 	default:
 		return fmt.Errorf("不支持的播放器模式：%s", appConfig.Mode)
 	}
+}
+
+// controlPlayerctlFallback 在启用 mpris-fallback 时按 mpris 模式筛选并控制其他播放器。
+func controlPlayerctlFallback(ctx context.Context, cause error, command string) error {
+	if !mprisFallbackEnabled(appConfig) {
+		return fmt.Errorf("未启用 mpris-fallback：%w", cause)
+	}
+	if err := controlPlayerctlInMode(ctx, "mpris", command); err != nil {
+		return err
+	}
+	logEvent("INFO", "SPlayer 不可用（%v），已回退到 playerctl 控制其他播放器", cause)
+	return nil
 }
 
 func controlSPlayerNext(ctx context.Context, command string) error {
@@ -197,19 +226,20 @@ func requestSPlayerControl(ctx context.Context, client *http.Client, baseURL, me
 	return nil
 }
 
-func controlWithPlayerctl(ctx context.Context, command string) error {
+// controlPlayerctlInMode 按指定模式筛选第一个匹配的播放器并交给 playerctl 执行命令。
+func controlPlayerctlInMode(ctx context.Context, mode, command string) error {
 	output, err := runPlayerctl(ctx, "--list-all")
 	if err != nil {
 		return err
 	}
 	for _, line := range strings.Split(string(output), "\n") {
 		player := strings.TrimSpace(line)
-		if player != "" && matchesPlayerMode(player, appConfig.Mode) {
+		if player != "" && matchesPlayerMode(player, mode) {
 			_, err := runPlayerctl(ctx, "--player", player, command)
 			return err
 		}
 	}
-	return fmt.Errorf("未找到 %s 模式可控制的 MPRIS 播放器", appConfig.Mode)
+	return fmt.Errorf("未找到 %s 模式可控制的 MPRIS 播放器", mode)
 }
 
 func runPlayerctl(ctx context.Context, args ...string) ([]byte, error) {
