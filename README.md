@@ -84,6 +84,7 @@ waybar-lyrics --mode splayer-next play-pause
 - `splayer` / `mpris`：程序直接执行系统中的 `playerctl`。先列出播放器，沿用歌词模式的筛选规则：`splayer` 只选择名称含 SPlayer 的播放器，`mpris` 排除 SPlayer；控制第一个匹配项，不向所有播放器广播。
 - 控制命令执行一次后退出，不输出歌词、不清空歌词进程日志；失败时向标准错误输出原因并以非零状态退出。无命令时仍持续输出歌词。
 - 选项应放在命令之前。使用 `waybar-lyrics --help` 查看帮助。
+- 使用 `--version` 或 `-V` 打印版本号后退出，输出形如 `waybar-lyrics 1.4.2`。
 
 ## Waybar 配置
 
