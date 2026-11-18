@@ -246,7 +246,7 @@ func main() {
 
 		currentIdentity := buildIdentityKey(metadata)
 		resolver.drain(currentIdentity, func(outcome lyricOutcome) {
-			currentLyrics = outcome.lyrics
+			currentLyrics = mergeLyricOutcome(currentLyrics, outcome)
 			logLyricsResult(outcome.reason, currentLyrics, &lyricsFailureLogged)
 			lastResolve = time.Now()
 			if outcome.reason == resolveReasonRefreshAPI {
@@ -420,6 +420,16 @@ func apiLyricsUpdateDue(current *ParsedLyrics, songElapsed time.Duration) bool {
 }
 
 // shouldRefreshAPILyrics 判断是否需要在切歌 5 秒后重新读取播放器 API 歌词。
+// mergeLyricOutcome 决定新的解析结果是否替换当前歌词。刷新 API 歌词、切回播放器
+// 歌词时解析可能落空（返回 nil），这时要保留已有歌词，否则歌词会中途消失、
+// 界面退回「歌手 - 歌名」。
+func mergeLyricOutcome(current *ParsedLyrics, outcome lyricOutcome) *ParsedLyrics {
+	if outcome.lyrics == nil && outcome.reason != resolveReasonInitial {
+		return current
+	}
+	return outcome.lyrics
+}
+
 // shouldRequestLyrics 判断这一轮要不要发起歌词解析。
 // LLM 结果还没就绪时先不搜：等歌名歌手从网页标题里提取出来再搜，免得拿原始
 // 标题搜到别的歌的歌词；这段时间界面只显示「歌手 - 歌名」。
@@ -1009,6 +1019,11 @@ func buildCurrentLyricText(metadata *PlayerMetadata, lyrics *ParsedLyrics) strin
 		positionMs += int64(latency)
 	}
 	idx := currentLineIndex(lyrics.Original, positionMs)
+	// 歌词里常有空行（间奏、气口、分句）。空行没有内容可显示，继续沿用最近一条
+	// 非空歌词，否则界面会退回「歌手 - 歌名」，看起来像在两行歌词之间插了一行标题。
+	for idx >= 0 && strings.TrimSpace(lyrics.Original[idx].Text) == "" && strings.TrimSpace(translationForLine(lyrics, idx)) == "" {
+		idx--
+	}
 
 	original := ""
 	translation := ""
