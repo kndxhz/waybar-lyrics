@@ -67,9 +67,15 @@ type LLMConfig struct {
 const defaultLLMRetry = 3
 
 // defaultLLMPrompt 是默认提取指令，{metadata} 会被替换为 MPRIS 元数据文本。
-const defaultLLMPrompt = `基于以下内容，如果这个媒体是歌曲，提取这个媒体的歌名，输出{"title":"歌名","singer":"歌手"}，歌名不要包含歌手，歌手如果数据内没有，不要瞎猜，只需要输出为null。如果不是歌曲，输出{"is_song":false}
+const defaultLLMPrompt = `根据元数据判断是否为歌曲并提取信息。
 
-{metadata}`
+规则：
+- 类型为音乐/音频（含 artist、track 等字段）视为歌曲，否则输出 {"is_song":false}
+- title：歌名，取自元数据，不得包含歌手名；缺失则为 null
+- singer：歌手，只取元数据中明确出现的，不得猜测；缺失则为 null；多个歌手用空格分隔
+- 仅输出 JSON，无其他文字
+
+元数据：{metadata}`
 
 // MarshalYAML 让默认 Prompt 以多行文本（|）写入配置文件，
 // 否则含引号和换行的 Prompt 会被转义成一行，用户难以编辑。
