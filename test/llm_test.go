@@ -345,6 +345,35 @@ func TestApplyLLMExtractionSkipsEmptyMetadata(t *testing.T) {
 	}
 }
 
+func TestApplyLLMExtractionLogsResultAtInfo(t *testing.T) {
+	server, _ := newLLMServer(t, "xesam:title 洛天依 - 譬如我.flac", `{"title":"譬如我","singer":"洛天依"}`, http.StatusOK)
+	configureLLMTest(t, server.URL)
+
+	var output bytes.Buffer
+	appLog.SetOutput(&output)
+	t.Cleanup(func() {
+		appLog.SetOutput(io.Discard)
+		configureLogLevel("INFO")
+	})
+	configureLogLevel("INFO")
+
+	metadata := &PlayerMetadata{Player: "vlc.instance1", Title: "洛天依 - 譬如我.flac", Artist: "洛天依"}
+	applyLLMWait(t, metadata, "xesam:title 洛天依 - 譬如我.flac")
+
+	logged := output.String()
+	for _, want := range []string{"[INFO]", "LLM 提取歌曲信息", "歌名=譬如我", "歌手=洛天依"} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("INFO 级别日志里缺少 %q：%s", want, logged)
+		}
+	}
+	// 请求与响应的原文只在 DEBUG 记录，INFO 下不要刷屏。
+	for _, unwanted := range []string{"LLM 请求:", "LLM 响应:"} {
+		if strings.Contains(logged, unwanted) {
+			t.Fatalf("INFO 级别不应出现 %q：%s", unwanted, logged)
+		}
+	}
+}
+
 func TestLLMEnabled(t *testing.T) {
 	config := defaultConfig()
 	if llmEnabled(config) {

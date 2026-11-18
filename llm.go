@@ -287,7 +287,7 @@ func llmCachedExtraction(key, metadataText, rawTitle, rawArtist string) (llmExtr
 		case !extraction.IsSong:
 			logEvent("INFO", "LLM 判定该媒体不是歌曲，按未识别到歌曲处理：「%s」", rawTitle)
 		default:
-			logEvent("DEBUG", "LLM 提取歌曲信息：原始=「%s / %s」→ 歌名=%s 歌手=%s",
+			logEvent("INFO", "LLM 提取歌曲信息：原始=「%s / %s」→ 歌名=%s 歌手=%s",
 				rawTitle, rawArtist, extraction.Title, extraction.Singer)
 		}
 	}()
