@@ -151,7 +151,7 @@ func main() {
 	}
 	defer logFile.Close()
 	configureLogLevel(appConfig.Log.Level)
-	logEvent("INFO", "程序启动: mode=%s latency_ms=%d mpris_fallback=%t", appConfig.Mode, appConfig.SPlayer.LatencyMS, mprisFallbackEnabled(appConfig))
+	logEvent("INFO", "程序启动: mode=%s latency_ms=%d mpris_ms=%d mpris_fallback=%t", appConfig.Mode, appConfig.SPlayer.LatencyMS, appConfig.MPRISMS, mprisFallbackEnabled(appConfig))
 	if appConfig.Mode == "mpris" && appConfig.MPRISFallback {
 		logEvent("WARN", "mpris 模式本身即 MPRIS，mpris-fallback 配置无效，已忽略")
 	}
@@ -806,15 +806,28 @@ func translationForLine(lyrics *ParsedLyrics, idx int) string {
 	return strings.TrimSpace(lyrics.Translation[i].Text)
 }
 
+// lyricLatencyMS 返回当前元数据使用的歌词补偿（毫秒）：SPlayer-Next 的进度
+// 经 HTTP API 返回，用 splayer.latency_ms；其余从 MPRIS 读取的歌曲（mpris
+// 模式以及 splayer / splayer-next 的回退）用顶层 mpris-ms。
+func lyricLatencyMS(metadata *PlayerMetadata) int {
+	if metadata == nil {
+		return 0
+	}
+	if isSPlayerNextMetadata(metadata) {
+		return appConfig.SPlayer.LatencyMS
+	}
+	return appConfig.MPRISMS
+}
+
 func buildCurrentLyricText(metadata *PlayerMetadata, lyrics *ParsedLyrics) string {
 	if lyrics == nil {
 		return ""
 	}
 
 	positionMs := metadata.Position / 1000
-	if isSPlayerNextMetadata(metadata) && appConfig.SPlayer.LatencyMS != 0 {
-		// 正数提前歌词以抵消 API 网络延迟；负数延后歌词，用于修正播放器进度偏快。
-		positionMs += int64(appConfig.SPlayer.LatencyMS)
+	if latency := lyricLatencyMS(metadata); latency != 0 {
+		// 正数提前歌词以抵消进度滞后；负数延后歌词，用于修正播放器进度偏快。
+		positionMs += int64(latency)
 	}
 	idx := currentLineIndex(lyrics.Original, positionMs)
 

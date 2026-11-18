@@ -315,3 +315,39 @@ func TestConfigLLMPreservesExplicitValues(t *testing.T) {
 		t.Fatalf("不应覆盖用户 Prompt：\n%s", data)
 	}
 }
+
+func TestConfigMPRISMSDefaultsTo500(t *testing.T) {
+	path := migrationFile(t, "mode: mpris\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.MPRISMS != 500 {
+		t.Fatalf("mpris-ms 默认值应为 500，got %d", config.MPRISMS)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "mpris-ms: 500") {
+		t.Fatalf("升级后的配置应补写 mpris-ms：\n%s", data)
+	}
+}
+
+func TestConfigMPRISMSKeepsExplicitValue(t *testing.T) {
+	path := migrationFile(t, "mode: mpris\nmpris-ms: 0\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.MPRISMS != 0 {
+		t.Fatalf("显式设置 mpris-ms: 0 应保留，got %d", config.MPRISMS)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "mpris-ms: 0") {
+		t.Fatalf("配置应保留显式取值：\n%s", data)
+	}
+}

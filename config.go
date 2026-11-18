@@ -18,10 +18,14 @@ type AppConfig struct {
 	// MPRISFallback 仅在 splayer / splayer-next 模式下生效：
 	// SPlayer 的 API 连不通或读不到歌曲时，回退到 MPRIS 读取其他播放器的歌曲。
 	// mpris 模式本身就是 MPRIS，该配置没有意义，会被忽略。
-	MPRISFallback bool          `yaml:"mpris-fallback"`
-	SPlayer       SPlayerConfig `yaml:"splayer"`
-	LLM           LLMConfig     `yaml:"llm"`
-	Log           LogConfig     `yaml:"log"`
+	MPRISFallback bool `yaml:"mpris-fallback"`
+	// MPRISMS 使用 MPRIS 读取歌曲时的歌词补偿（毫秒），mpris 模式以及
+	// splayer / splayer-next 回退到 MPRIS 时生效。正数表示歌词提前，
+	// 负数表示歌词延后，0 表示不补偿。
+	MPRISMS int           `yaml:"mpris-ms"`
+	SPlayer SPlayerConfig `yaml:"splayer"`
+	LLM     LLMConfig     `yaml:"llm"`
+	Log     LogConfig     `yaml:"log"`
 }
 
 type LogConfig struct {
@@ -87,12 +91,17 @@ func (c LLMConfig) MarshalYAML() (any, error) {
 // defaultLyricLatencyMS 歌词默认提前量，用于抵消 SPlayer-Next API 的网络延迟。
 const defaultLyricLatencyMS = 300
 
+// defaultMPRISLatencyMS 是 MPRIS 来源歌词的默认提前量，用于抵消轮询读取
+// 播放进度带来的滞后。
+const defaultMPRISLatencyMS = 500
+
 var appConfig = defaultConfig()
 
 func defaultConfig() AppConfig {
 	return AppConfig{
 		Mode:          "mpris",
 		MPRISFallback: true,
+		MPRISMS:       defaultMPRISLatencyMS,
 		Log:           LogConfig{Path: "/tmp/waybar-lyrics.log", Level: "INFO"},
 		SPlayer: SPlayerConfig{
 			Address:    "127.0.0.1",

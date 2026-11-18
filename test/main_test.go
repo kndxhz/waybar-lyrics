@@ -217,6 +217,11 @@ func TestTranslationForLineStaysInWindow(t *testing.T) {
 }
 
 func TestBuildCurrentLyricTextSparseTranslation(t *testing.T) {
+	oldConfig := appConfig
+	appConfig = defaultConfig()
+	appConfig.MPRISMS = 0 // 该用例只关心翻译稀疏，不补偿歌词时间
+	t.Cleanup(func() { appConfig = oldConfig })
+
 	lyrics := &ParsedLyrics{
 		Original:    []TimedLyricLine{{TimeMs: 0, Text: "いつか"}, {TimeMs: 1000, Text: "二人はじまった場所"}},
 		Translation: []TimedLyricLine{{TimeMs: 0, Text: "曾经"}},
@@ -237,7 +242,7 @@ func TestBuildCurrentLyricTextTranslationOnlySource(t *testing.T) {
 	}
 }
 
-func TestBuildCurrentLyricTextSPlayerNextLeadsByLatency(t *testing.T) {
+func TestBuildCurrentLyricTextLatencyCompensation(t *testing.T) {
 	oldConfig := appConfig
 	appConfig = defaultConfig()
 	t.Cleanup(func() { appConfig = oldConfig })
@@ -245,43 +250,52 @@ func TestBuildCurrentLyricTextSPlayerNextLeadsByLatency(t *testing.T) {
 	lyrics := &ParsedLyrics{
 		Original: []TimedLyricLine{{TimeMs: 0, Text: "a"}, {TimeMs: 1000, Text: "b"}},
 	}
-	// 900ms 时原本还没到第二行；SPlayer-Next 的 API 进度提前 100ms 后应显示第二行。
+	// SPlayer-Next 的进度经 HTTP API 返回，用 splayer.latency_ms。
 	apiMetadata := &PlayerMetadata{Player: "splayer-next", Position: 900 * 1000}
-	// MPRIS 回退读到的进度来自 D-Bus，不做网络延迟补偿。
+	// MPRIS 来源（mpris 模式与回退）的进度来自 D-Bus，用顶层 mpris-ms。
 	mprisMetadata := &PlayerMetadata{Player: "vlc", Position: 900 * 1000}
 
-	appConfig.Mode = "splayer-next"
+	// 900ms 时原本还没到第二行；提前 100ms 后应显示第二行。
+	appConfig.SPlayer.LatencyMS = 100
+	appConfig.MPRISMS = 0
 	if got := buildCurrentLyricText(apiMetadata, lyrics); got != "b" {
-		t.Errorf("SPlayer-Next API 进度应提前 100ms，got %q", got)
+		t.Errorf("latency_ms=100 时应提前 100ms，got %q", got)
 	}
 	if got := buildCurrentLyricText(mprisMetadata, lyrics); got != "a" {
-		t.Errorf("MPRIS 回退元数据不应提前歌词，got %q", got)
+		t.Errorf("mpris-ms=0 时不应提前歌词，got %q", got)
 	}
 
-	appConfig.Mode = "mpris"
+	// mpris-ms 只影响 MPRIS 来源，不影响 SPlayer-Next。
+	appConfig.MPRISMS = 100
+	if got := buildCurrentLyricText(mprisMetadata, lyrics); got != "b" {
+		t.Errorf("mpris-ms=100 时应提前 100ms，got %q", got)
+	}
+	if lyricLatencyMS(apiMetadata) != 100 || lyricLatencyMS(mprisMetadata) != 100 {
+		t.Fatalf("补偿取值不符：api=%d mpris=%d", lyricLatencyMS(apiMetadata), lyricLatencyMS(mprisMetadata))
+	}
+
+	// 默认值 500ms。
+	appConfig = defaultConfig()
+	if appConfig.MPRISMS != 500 {
+		t.Fatalf("mpris-ms 默认值应为 500，got %d", appConfig.MPRISMS)
+	}
+	mprisMetadata.Position = 500 * 1000
+	if got := buildCurrentLyricText(mprisMetadata, lyrics); got != "b" {
+		t.Errorf("默认 mpris-ms=500 应提前 500ms，got %q", got)
+	}
+
+	// 负数表示延后：1100ms 时原本已到第二行，延后 200ms 后应仍显示第一行。
+	appConfig.MPRISMS = -200
+	mprisMetadata.Position = 1100 * 1000
 	if got := buildCurrentLyricText(mprisMetadata, lyrics); got != "a" {
-		t.Errorf("mpris 模式不应提前歌词，got %q", got)
+		t.Errorf("mpris-ms=-200 时应延后 200ms，got %q", got)
 	}
 
-	// 自定义延迟生效
-	appConfig.SPlayer.LatencyMS = 200
-	apiMetadata.Position = 800 * 1000
-	if got := buildCurrentLyricText(apiMetadata, lyrics); got != "b" {
-		t.Errorf("latency_ms=200 时应提前 200ms，got %q", got)
-	}
-
-	// 0 表示关闭补偿
-	appConfig.SPlayer.LatencyMS = 0
-	apiMetadata.Position = 900 * 1000
-	if got := buildCurrentLyricText(apiMetadata, lyrics); got != "a" {
-		t.Errorf("latency_ms=0 时不应提前歌词，got %q", got)
-	}
-
-	// 负数表示延后：1000ms 时原本已到第二行，延后 100ms 后应仍显示第一行。
-	appConfig.SPlayer.LatencyMS = -100
-	apiMetadata.Position = 1000 * 1000
-	if got := buildCurrentLyricText(apiMetadata, lyrics); got != "a" {
-		t.Errorf("latency_ms=-100 时应延后 100ms，got %q", got)
+	// 0 关闭补偿
+	appConfig.MPRISMS = 0
+	mprisMetadata.Position = 900 * 1000
+	if got := buildCurrentLyricText(mprisMetadata, lyrics); got != "a" {
+		t.Errorf("mpris-ms=0 时不应提前歌词，got %q", got)
 	}
 }
 
