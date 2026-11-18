@@ -59,7 +59,7 @@ func logField(value string) string {
 func logLyricsResult(action string, lyrics *ParsedLyrics, failureLogged *bool) {
 	if lyrics == nil {
 		if !*failureLogged {
-			logEvent("WARN", "%s: 未找到歌词，将重试", action)
+			logEvent("INFO", "%s: 未找到歌词，将重试", action)
 			*failureLogged = true
 		}
 		return

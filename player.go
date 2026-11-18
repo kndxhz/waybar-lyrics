@@ -175,7 +175,7 @@ func controlPlayer(command string) error {
 		if err := controlFallbackPlayer(ctx, target, command); err == nil {
 			return nil
 		} else {
-			logEvent("WARN", "控制暂停回退的媒体源 %s 失败，改为控制 SPlayer：%v", target, err)
+			logEvent("INFO", "控制暂停回退的媒体源 %s 失败，改为控制 SPlayer：%v", target, err)
 		}
 	}
 	switch appConfig.Mode {

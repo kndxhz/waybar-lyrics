@@ -53,7 +53,7 @@ func TestLogLevelFiltering(t *testing.T) {
 	}
 }
 
-func TestLyricsFailureWarningDeduplication(t *testing.T) {
+func TestLyricsFailureLogDeduplication(t *testing.T) {
 	var output bytes.Buffer
 	appLog.SetOutput(&output)
 	defer func() { appLog.SetOutput(io.Discard); configureLogLevel("INFO") }()
@@ -61,13 +61,17 @@ func TestLyricsFailureWarningDeduplication(t *testing.T) {
 	failed := false
 	logLyricsResult("解析", nil, &failed)
 	logLyricsResult("解析", nil, &failed)
-	if count := strings.Count(output.String(), "[WARN]"); count != 1 {
-		t.Fatalf("expected one warning, got %d: %s", count, output.String())
+	if count := strings.Count(output.String(), "未找到歌词"); count != 1 {
+		t.Fatalf("expected one failure log, got %d: %s", count, output.String())
+	}
+	// 没找到歌词是预期之内的情况（播放器常常稍后才拿到歌词），只记 INFO。
+	if strings.Contains(output.String(), "[WARN]") {
+		t.Fatalf("歌词未找到应记 INFO 而不是 WARN: %s", output.String())
 	}
 	logLyricsResult("解析", &ParsedLyrics{Source: "API"}, &failed)
 	logLyricsResult("解析", nil, &failed)
-	if count := strings.Count(output.String(), "[WARN]"); count != 2 {
-		t.Fatalf("expected warning after recovery, got %d: %s", count, output.String())
+	if count := strings.Count(output.String(), "未找到歌词"); count != 2 {
+		t.Fatalf("expected failure log after recovery, got %d: %s", count, output.String())
 	}
 }
 
