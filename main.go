@@ -110,6 +110,11 @@ type PlayerMetadata struct {
 	Position int64 // 播放位置 (微秒)
 	ArtUrl   string
 	Lyrics   *ParsedLyrics // 播放器 API 已提供的歌词
+	// 下面是 LLM 补全前的原始标题与歌手。后台补全只改显示与搜索词，
+	// 不能当成切歌，所以切歌判断用的是这一份。
+	RawTitle  string
+	RawArtist string
+	llmFilled bool
 }
 
 func main() {
@@ -160,6 +165,7 @@ func main() {
 	defer ticker.Stop()
 
 	lastSongKey := ""
+	lastIdentityKey := ""
 	lastTrackID := ""
 	var idRetry nextIDRetry
 	lastRendered := ""
@@ -183,6 +189,7 @@ func main() {
 				lastRendered = empty
 			}
 			lastSongKey = ""
+			lastIdentityKey = ""
 			lastTrackID = ""
 			idRetry = nextIDRetry{}
 			<-ticker.C
@@ -198,10 +205,11 @@ func main() {
 		if trackID == "0" {
 			trackID = ""
 		}
-		trackChanged := metadata.Player == "splayer-next" && lastTrackID != "" && trackID != "" && lastTrackID != trackID
 		idArrived := metadata.Player == "splayer-next" && lastTrackID == "" && trackID != ""
-		if songKey != lastSongKey || trackChanged {
+		switch classifyTrackChange(lastIdentityKey, lastSongKey, lastTrackID, metadata) {
+		case trackSwitched:
 			logTrackChange(metadata)
+			lastIdentityKey = buildIdentityKey(metadata)
 			lastSongKey = songKey
 			currentLyrics = nil
 			lastResolve = time.Time{}
@@ -210,9 +218,20 @@ func main() {
 			lyricsFailureLogged = false
 			idRetry = nextIDRetry{}
 			lastTrackID = ""
-		} else if idArrived && currentLyrics != nil && currentLyrics.Source != lyricsSourceAPI {
-			currentLyrics = nil
-			lastResolve = time.Time{}
+		case trackRefilled:
+			// 同一首歌，只是 LLM 后台补全了标题歌手：换掉搜索词，但不记切歌。
+			logEvent("DEBUG", "LLM 补全曲目信息: 歌名=%s 歌手=%s", metadata.Title, metadata.Artist)
+			lastSongKey = songKey
+			if currentLyrics == nil || len(currentLyrics.Original) == 0 {
+				// 原始标题没搜到歌词，用补全后的搜索词再试一次。
+				lastResolve = time.Time{}
+				lyricsFailureLogged = false
+			}
+		default:
+			if idArrived && currentLyrics != nil && currentLyrics.Source != lyricsSourceAPI {
+				currentLyrics = nil
+				lastResolve = time.Time{}
+			}
 		}
 		if trackID != "" {
 			lastTrackID = trackID
@@ -264,6 +283,43 @@ func main() {
 
 		<-ticker.C
 	}
+}
+
+// buildIdentityKey 与 buildSongKey 相同，但用 LLM 补全前的标题歌手。
+// LLM 后台补全同一首歌的信息时，这里保持不变，因此不会被当成切歌。
+func buildIdentityKey(metadata *PlayerMetadata) string {
+	if !metadata.llmFilled {
+		return buildSongKey(metadata)
+	}
+	clone := *metadata
+	clone.Title, clone.Artist = metadata.RawTitle, metadata.RawArtist
+	return buildSongKey(&clone)
+}
+
+// trackDelta 描述本轮元数据相对上一轮的变化。
+type trackDelta int
+
+const (
+	trackSame     trackDelta = iota // 同一首歌，没有变化
+	trackRefilled                   // 同一首歌，LLM 后台补全了标题歌手
+	trackSwitched                   // 换歌了
+)
+
+// classifyTrackChange 区分「切歌」和「LLM 补全同一首歌的信息」。
+// 补全前后的标题歌手不同，但 identity key 相同，不能当切歌处理。
+func classifyTrackChange(lastIdentityKey, lastSongKey, lastTrackID string, metadata *PlayerMetadata) trackDelta {
+	trackID := metadata.TrackID
+	if trackID == "0" {
+		trackID = ""
+	}
+	trackChanged := metadata.Player == "splayer-next" && lastTrackID != "" && trackID != "" && lastTrackID != trackID
+	if trackChanged || lastIdentityKey == "" || buildIdentityKey(metadata) != lastIdentityKey {
+		return trackSwitched
+	}
+	if buildSongKey(metadata) != lastSongKey {
+		return trackRefilled
+	}
+	return trackSame
 }
 
 func buildSongKey(metadata *PlayerMetadata) string {
@@ -871,9 +927,10 @@ var mprisBusNames = func(conn *dbus.Conn) ([]string, error) {
 
 // mprisPlayerData 是一台 MPRIS 播放器的读取结果，用于在多个播放器之间挑选。
 type mprisPlayerData struct {
-	name     string // 播放器短名，如 vlc、firefox.instance_1_2
-	status   string // PlaybackStatus：Playing、Paused 等
-	metadata *PlayerMetadata
+	name         string // 播放器短名，如 vlc、firefox.instance_1_2
+	status       string // PlaybackStatus：Playing、Paused 等
+	metadata     *PlayerMetadata
+	metadataText string // 拼好的属性文本，选中这台播放器后才拿去请求 LLM
 }
 
 // getMPRISMetadata 通过 D-Bus MPRIS 接口获取播放器元数据。
@@ -924,21 +981,48 @@ func readMPRISMetadata(preferred string, playingOnly bool) (*PlayerMetadata, str
 		if !matchesPlayerMode(shortName, mode) {
 			continue
 		}
-		metadata, status, ok := readMPRISPlayer(conn, name, shortName)
+		// 这里先不请求 LLM：机器上常驻注册着好几台播放器，逐台调用模型既慢又
+		// 浪费配额，等选出最合适的一台再补提取。
+		metadata, status, metadataText, ok := readMPRISPlayerRaw(conn, name, shortName)
 		if !ok {
 			continue
 		}
 		if playingOnly && mprisStatusRank(status) != 0 {
 			continue
 		}
-		candidates = append(candidates, mprisPlayerData{name: shortName, status: status, metadata: metadata})
+		candidates = append(candidates, mprisPlayerData{
+			name:         shortName,
+			status:       status,
+			metadata:     metadata,
+			metadataText: metadataText,
+		})
 	}
 
-	chosen := chooseMPRISPlayerData(candidates)
-	if chosen == nil {
-		return nil, ""
+	for len(candidates) > 0 {
+		chosen := chooseMPRISPlayerData(candidates)
+		if chosen == nil {
+			return nil, ""
+		}
+		metadata := *chosen.metadata
+		if applyLLMToMetadata(&metadata, chosen.metadataText) {
+			return &metadata, chosen.status
+		}
+		// LLM 判定不是歌曲：按没识别到歌曲处理，换下一台播放器。
+		candidates = dropMPRISCandidate(candidates, chosen.name)
 	}
-	return chosen.metadata, chosen.status
+	return nil, ""
+}
+
+// dropMPRISCandidate 去掉已判定不可用的候选播放器，返回剩余候选。
+func dropMPRISCandidate(candidates []mprisPlayerData, name string) []mprisPlayerData {
+	remaining := make([]mprisPlayerData, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.name == name {
+			continue
+		}
+		remaining = append(remaining, candidate)
+	}
+	return remaining
 }
 
 // chooseMPRISPlayer 在候选播放器里挑一个：正在播放优先，其次暂停，
@@ -996,26 +1080,51 @@ func readMPRISPlaybackStatus(conn *dbus.Conn, busName string) (string, bool) {
 	return status, true
 }
 
-// readMPRISPlayer 读取单个播放器的元数据。没有可用歌名（未播放、没有曲目、
-// 或只有占位标题）时返回 ok=false，让调用方继续尝试其他播放器。
-func readMPRISPlayer(conn *dbus.Conn, busName, playerName string) (*PlayerMetadata, string, bool) {
+// readMPRISPlayerRaw 读取单个播放器的元数据，不请求 LLM，并把属性文本一并返回。
+// 没有可用歌名（未播放、没有曲目、或只有占位标题）时返回 ok=false。
+func readMPRISPlayerRaw(conn *dbus.Conn, busName, playerName string) (*PlayerMetadata, string, string, bool) {
 	var props map[string]dbus.Variant
 	err := conn.Object(busName, "/org/mpris/MediaPlayer2").
 		Call("org.freedesktop.DBus.Properties.GetAll", 0, "org.mpris.MediaPlayer2.Player").Store(&props)
 	if err != nil {
-		return nil, "", false
+		return nil, "", "", false
 	}
 
 	metadata, status, ok := metadataFromMPRISProps(props, playerName)
 	if !ok {
+		return nil, "", "", false
+	}
+	return metadata, status, mprisMetadataText(props), true
+}
+
+// readMPRISPlayer 读取单个播放器的元数据，并对它应用 LLM 提取。
+// LLM 判定不是歌曲时返回 ok=false，调用方继续尝试其他播放器。
+func readMPRISPlayer(conn *dbus.Conn, busName, playerName string) (*PlayerMetadata, string, bool) {
+	metadata, status, metadataText, ok := readMPRISPlayerRaw(conn, busName, playerName)
+	if !ok {
 		return nil, "", false
 	}
-	// MPRIS 模式下取到的标题往往只是文件名或网页标题，启用 LLM 时用它提取歌名歌手。
-	// LLM 判定不是歌曲时按没识别到歌曲处理，跳过这台播放器。
-	if llmEnabled(appConfig) && !applyLLMExtraction(metadata, mprisMetadataText(props)) {
+	if !applyLLMToMetadata(metadata, metadataText) {
 		return nil, "", false
 	}
 	return metadata, status, true
+}
+
+// applyLLMToMetadata 在启用 LLM 时用它提取歌名歌手。MPRIS 模式下取到的标题
+// 往往只是文件名或网页标题，因此这里补一层识别；判定不是歌曲时返回 false。
+func applyLLMToMetadata(metadata *PlayerMetadata, metadataText string) bool {
+	if !llmEnabled(appConfig) {
+		return true
+	}
+	rawTitle, rawArtist := metadata.Title, metadata.Artist
+	if !applyLLMExtraction(metadata, metadataText) {
+		return false
+	}
+	// LLM 结果是后台补上的，记住补全前的标题歌手，避免把补全当成切歌。
+	if metadata.Title != rawTitle || metadata.Artist != rawArtist {
+		metadata.RawTitle, metadata.RawArtist, metadata.llmFilled = rawTitle, rawArtist, true
+	}
+	return true
 }
 
 // metadataFromMPRISProps 把 GetAll 拿到的属性转换成元数据。

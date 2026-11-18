@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,6 +44,80 @@ func configureLLMTest(t *testing.T, baseURL string) {
 		llmInFlight.Wait()
 		resetLLMCache()
 	})
+}
+
+func TestClassifyTrackChange(t *testing.T) {
+	raw := &PlayerMetadata{Player: "chromium.instance1", Title: "爱言叶V feat. 初音未来", Artist: "DECO*27", TrackID: "TrackCE25"}
+	filled := *raw
+	filled.Title, filled.Artist = "爱言叶V", "初音未来"
+	filled.RawTitle, filled.RawArtist, filled.llmFilled = raw.Title, raw.Artist, true
+
+	if got := classifyTrackChange("", "", "", raw); got != trackSwitched {
+		t.Fatalf("首轮应算切歌，got %v", got)
+	}
+	sameKey := buildIdentityKey(raw)
+	if got := classifyTrackChange(sameKey, buildSongKey(raw), raw.TrackID, raw); got != trackSame {
+		t.Fatalf("同一首歌应算没变化，got %v", got)
+	}
+	// 只有标题歌手被 LLM 补全，属于同一首歌，不能记成切歌。
+	if got := classifyTrackChange(sameKey, buildSongKey(raw), raw.TrackID, &filled); got != trackRefilled {
+		t.Fatalf("LLM 补全应算补全而非切歌，got %v", got)
+	}
+	other := *raw
+	other.Title = "别的歌"
+	if got := classifyTrackChange(sameKey, buildSongKey(raw), raw.TrackID, &other); got != trackSwitched {
+		t.Fatalf("换歌应算切歌，got %v", got)
+	}
+	// splayer-next 的歌曲 ID 变了也是切歌。
+	splayer := &PlayerMetadata{Player: "splayer-next", Title: "歌名", Artist: "歌手", TrackID: "2"}
+	if got := classifyTrackChange(buildIdentityKey(splayer), buildSongKey(splayer), "1", splayer); got != trackSwitched {
+		t.Fatalf("歌曲 ID 变化应算切歌，got %v", got)
+	}
+}
+
+func TestBuildIdentityKeyIgnoresLLMFill(t *testing.T) {
+	raw := &PlayerMetadata{Player: "chromium.instance1", Title: "爱言叶V feat. 初音未来", Artist: "DECO*27", TrackID: "TrackCE25"}
+	filled := *raw
+	filled.Title, filled.Artist = "爱言叶V", "初音未来"
+	filled.RawTitle, filled.RawArtist, filled.llmFilled = raw.Title, raw.Artist, true
+
+	if buildSongKey(&filled) == buildSongKey(raw) {
+		t.Fatal("补全后搜索词应变化")
+	}
+	if buildIdentityKey(&filled) != buildIdentityKey(raw) {
+		t.Fatalf("补全不应改变 identity key：%q vs %q", buildIdentityKey(&filled), buildIdentityKey(raw))
+	}
+}
+
+func TestGetMPRISMetadataRecordsLLMFillIdentity(t *testing.T) {
+	server, _ := newLLMServer(t, "", `{"title":"爱言叶V","singer":"初音未来"}`, http.StatusOK)
+	defer server.Close()
+	configureLLMTest(t, server.URL)
+	fakeMPRIS(t, "org.mpris.MediaPlayer2.bilibili.instance1", "DECO*27 - 爱言叶V feat. 初音未来_哔哩哔哩_bilibili", "", "Playing")
+	onlyMPRISPlayers(t, "org.mpris.MediaPlayer2.bilibili.instance1")
+
+	first := getMPRISMetadata("")
+	if first == nil {
+		t.Fatal("首轮应读到元数据")
+	}
+	if first.Title != "爱言叶V feat. 初音未来" || first.Artist != "DECO*27" {
+		t.Fatalf("首轮应先用清洗后的原始标题：%+v", first)
+	}
+	llmInFlight.Wait()
+
+	second := getMPRISMetadata("")
+	if second == nil {
+		t.Fatal("补全后应读到元数据")
+	}
+	if second.Title != "爱言叶V" || second.Artist != "初音未来" {
+		t.Fatalf("补全后应换成 LLM 结果：%+v", second)
+	}
+	if !second.llmFilled {
+		t.Fatal("补全后应记住补全前的标题歌手")
+	}
+	if got := classifyTrackChange(buildIdentityKey(first), buildSongKey(first), first.TrackID, second); got != trackRefilled {
+		t.Fatalf("补全前后应算同一首歌，got %v", got)
+	}
 }
 
 func TestCleanLLMOutput(t *testing.T) {
@@ -133,7 +208,7 @@ func newLLMServer(t *testing.T, wantMetadata, content string, status int) (*http
 		if wantMetadata != "" && !strings.Contains(payload.Messages[0].Content, wantMetadata) {
 			t.Errorf("prompt 未填入元数据：%s", payload.Messages[0].Content)
 		}
-		if !strings.Contains(payload.Messages[0].Content, "提取这个媒体的歌名") {
+		if !strings.Contains(payload.Messages[0].Content, defaultLLMPrompt[:20]) {
 			t.Errorf("prompt 丢失默认指令：%s", payload.Messages[0].Content)
 		}
 		w.WriteHeader(status)
@@ -535,4 +610,54 @@ func newSlowLLMServer(t *testing.T, delay time.Duration, content string) (*httpt
 	}))
 	t.Cleanup(server.Close)
 	return server, &calls
+}
+
+func TestGetMPRISMetadataOnlyAsksLLMForChosenPlayer(t *testing.T) {
+	var calls int32
+	var prompts []string
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		var payload struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &payload)
+		if len(payload.Messages) > 0 {
+			mu.Lock()
+			prompts = append(prompts, payload.Messages[0].Content)
+			mu.Unlock()
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"{\"title\":\"爱言叶V\",\"singer\":\"初音未来\"}"}}]}`)
+	}))
+	defer server.Close()
+	configureLLMTest(t, server.URL)
+
+	fakeMPRIS(t, "org.mpris.MediaPlayer2.playing.instance1", "DECO*27 - 爱言叶V feat. 初音未来_哔哩哔哩_bilibili", "", "Playing")
+	fakeMPRIS(t, "org.mpris.MediaPlayer2.paused.instance1", "别的播放器里的视频标题", "", "Paused")
+	onlyMPRISPlayers(t,
+		"org.mpris.MediaPlayer2.playing.instance1",
+		"org.mpris.MediaPlayer2.paused.instance1",
+	)
+
+	for i := 0; i < 3; i++ {
+		metadata := getMPRISMetadata("")
+		if metadata == nil || metadata.Player != "playing.instance1" {
+			t.Fatalf("第 %d 轮选中的播放器 = %+v", i, metadata)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	llmInFlight.Wait()
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("只应为选中的播放器请求一次 LLM，实际 %d 次", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, prompt := range prompts {
+		if strings.Contains(prompt, "别的播放器里的视频标题") {
+			t.Errorf("没选中的播放器也被拿去请求 LLM：%s", prompt)
+		}
+	}
 }
