@@ -274,7 +274,8 @@ func applyLLMExtraction(metadata *PlayerMetadata, metadataText string) bool {
 	if strings.TrimSpace(metadataText) == "" {
 		return true
 	}
-	key := metadata.Player + "\x00" + metadata.Title + "\x00" + metadata.Artist
+	key := metadata.Player + "\x00" + normalizeLLMCacheText(metadata.Title) +
+		"\x00" + normalizeLLMCacheText(metadata.Artist)
 	extraction, err, ready := llmCachedExtraction(key, metadataText, metadata.Title)
 	if !ready || err != nil {
 		return true
@@ -287,6 +288,12 @@ func applyLLMExtraction(metadata *PlayerMetadata, metadataText string) bool {
 	return true
 }
 
+// normalizeLLMCacheText 归一化歌名歌手后再做缓存键：B 站这类网页播放器会把
+// 页面标题在带站点后缀与不带后缀之间来回切，归一化后同一首歌只判断一次。
+func normalizeLLMCacheText(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(cleanMPRISTitle(value)), " "))
+}
+
 // mprisMetadataText 把已读到的 D-Bus 属性拼成文本，内容与 playerctl metadata
 // 的输出一致（每行一个「键 值」），无需额外调用 playerctl。
 func mprisMetadataText(props map[string]dbus.Variant) string {
@@ -295,6 +302,10 @@ func mprisMetadataText(props map[string]dbus.Variant) string {
 		value := strings.TrimSpace(mprisTextValue(variant))
 		if value == "" {
 			return
+		}
+		if key == "xesam:title" {
+			// 网页播放器的标题带站点后缀时，模型容易把它当成视频标题而不是歌曲。
+			value = cleanMPRISTitle(value)
 		}
 		lines = append(lines, key+" "+value)
 	}

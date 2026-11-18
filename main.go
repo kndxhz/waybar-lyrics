@@ -25,7 +25,7 @@ var base_lrclib = "https://lrclib.net"
 var base_ttml = "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/ncm-lyrics"
 
 // version 为当前发布版本，可用 -ldflags "-X main.version=…" 覆盖
-var version = "1.5.6"
+var version = "1.5.7"
 
 // 歌词来源标识，会追加到 Waybar tooltip 中
 const (
@@ -1073,6 +1073,10 @@ var browserTitleSuffixes = []string{
 	" - Spotify",
 	" | Spotify",
 	" - SoundCloud",
+	// B 站网页标题固定以「_哔哩哔哩_bilibili」结尾，长的写法必须排在前面。
+	"_哔哩哔哩_bilibili",
+	"_bilibili",
+	"_哔哩哔哩",
 	" - 哔哩哔哩",
 	" - bilibili",
 }
