@@ -55,8 +55,13 @@ type LLMConfig struct {
 	BaseURL   string `yaml:"base_url"`
 	ModelName string `yaml:"model_name"`
 	APIKey    string `yaml:"api_key"`
-	Prompt    string `yaml:"prompt"`
+	// Retry 是接口请求失败后的重试次数，0 表示失败即放弃。
+	Retry  int    `yaml:"retry"`
+	Prompt string `yaml:"prompt"`
 }
+
+// defaultLLMRetry 是 LLM 接口请求失败后的默认重试次数。
+const defaultLLMRetry = 3
 
 // defaultLLMPrompt 是默认提取指令，{metadata} 会被替换为 MPRIS 元数据文本。
 const defaultLLMPrompt = `基于以下内容，如果这个媒体是歌曲，提取这个媒体的歌名，输出{"title":"歌名","singer":"歌手"}，歌名不要包含歌手，歌手如果数据内没有，不要瞎猜，只需要输出为null。如果不是歌曲，输出{"is_song":false}
@@ -81,6 +86,7 @@ func (c LLMConfig) MarshalYAML() (any, error) {
 	content = append(content, pair("base_url", "!!str", c.BaseURL)...)
 	content = append(content, pair("model_name", "!!str", c.ModelName)...)
 	content = append(content, pair("api_key", "!!str", c.APIKey)...)
+	content = append(content, pair("retry", "!!int", strconv.Itoa(c.Retry))...)
 	content = append(content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "prompt"},
 		prompt,
@@ -114,6 +120,7 @@ func defaultConfig() AppConfig {
 			BaseURL:   "https://api.deepseek.com/v1",
 			ModelName: "deepseek-flash",
 			APIKey:    "xxx",
+			Retry:     defaultLLMRetry,
 			Prompt:    defaultLLMPrompt,
 		},
 	}
@@ -191,6 +198,9 @@ func loadConfig() (AppConfig, error) {
 	}
 	if config.SPlayer.SongIDMode == "" {
 		config.SPlayer.SongIDMode = "auto"
+	}
+	if config.LLM.Retry < 0 {
+		config.LLM.Retry = 0
 	}
 	return config, nil
 }

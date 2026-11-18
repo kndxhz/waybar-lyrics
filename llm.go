@@ -115,16 +115,42 @@ func parseLLMExtraction(raw string) (llmExtraction, error) {
 	return llmExtraction{IsSong: true, Title: title, Singer: singer}, nil
 }
 
+// llmRetryBackoff 是两次请求之间的等待时间，避免接口刚抖动就立刻重发。
+const llmRetryBackoff = 200 * time.Millisecond
+
 // requestLLMExtraction 把元数据文本填进 Prompt 占位符后请求 OpenAI 兼容接口。
+// 请求失败按 llm.retry 重试，模型输出无法解析时不重试。
 func requestLLMExtraction(metadataText string) (llmExtraction, error) {
 	prompt := strings.ReplaceAll(appConfig.LLM.Prompt, "{metadata}", metadataText)
-	ctx, cancel := context.WithTimeout(context.Background(), llmRequestTimeout)
-	defer cancel()
-	content, err := callLLMChat(ctx, prompt)
+	content, err := callLLMChatWithRetry(prompt)
 	if err != nil {
 		return llmExtraction{}, err
 	}
 	return parseLLMExtraction(content)
+}
+
+// callLLMChatWithRetry 在请求失败时最多重试 llm.retry 次：0 表示只请求一次。
+func callLLMChatWithRetry(prompt string) (string, error) {
+	retries := appConfig.LLM.Retry
+	if retries < 0 {
+		retries = 0
+	}
+	for attempt := 0; ; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), llmRequestTimeout)
+		content, err := callLLMChat(ctx, prompt)
+		cancel()
+		if err == nil {
+			if attempt > 0 {
+				logEvent("INFO", "LLM 接口第 %d 次重试成功", attempt)
+			}
+			return content, nil
+		}
+		if attempt >= retries {
+			return "", err
+		}
+		logEvent("WARN", "LLM 接口第 %d/%d 次请求失败，%v；%s 后重试", attempt+1, retries+1, err, llmRetryBackoff)
+		time.Sleep(llmRetryBackoff)
+	}
 }
 
 // callLLMChat 调用 {base_url}/chat/completions 并返回首条回复内容。

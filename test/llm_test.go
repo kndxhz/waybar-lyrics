@@ -324,3 +324,93 @@ func TestReadMPRISPlayerSkipsNonSong(t *testing.T) {
 		t.Fatal("LLM 判定非歌曲时应按没识别到歌曲处理")
 	}
 }
+
+// newFlakyLLMServer 前 failTimes 次返回 500，之后返回 content。
+func newFlakyLLMServer(t *testing.T, failTimes int32, content string) (*httptest.Server, *int32) {
+	t.Helper()
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) <= failTimes {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":"boom"}`)
+			return
+		}
+		response, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"content": content},
+			}},
+		})
+		_, _ = w.Write(response)
+	}))
+	t.Cleanup(server.Close)
+	return server, &calls
+}
+
+func TestRequestLLMExtractionRetriesRequestFailures(t *testing.T) {
+	server, calls := newFlakyLLMServer(t, 2, `{"title":"譬如我","singer":"洛天依"}`)
+	configureLLMTest(t, server.URL)
+	appConfig.LLM.Retry = 3
+
+	extraction, err := requestLLMExtraction("xesam:title 譬如我")
+	if err != nil {
+		t.Fatalf("重试后应成功：%v", err)
+	}
+	if extraction.Title != "譬如我" || extraction.Singer != "洛天依" {
+		t.Fatalf("提取结果不符：%+v", extraction)
+	}
+	if got := atomic.LoadInt32(calls); got != 3 {
+		t.Fatalf("应请求 3 次（失败 2 次 + 成功 1 次），got %d", got)
+	}
+}
+
+func TestRequestLLMExtractionStopsAfterRetries(t *testing.T) {
+	server, calls := newFlakyLLMServer(t, 10, `{"title":"譬如我"}`)
+	configureLLMTest(t, server.URL)
+	appConfig.LLM.Retry = 3
+
+	if _, err := requestLLMExtraction("xesam:title 譬如我"); err == nil {
+		t.Fatal("全部失败时应返回错误")
+	}
+	if got := atomic.LoadInt32(calls); got != 4 {
+		t.Fatalf("重试 3 次即共 4 次请求，got %d", got)
+	}
+}
+
+func TestRequestLLMExtractionWithoutRetry(t *testing.T) {
+	server, calls := newFlakyLLMServer(t, 10, `{"title":"譬如我"}`)
+	configureLLMTest(t, server.URL)
+	appConfig.LLM.Retry = 0
+
+	if _, err := requestLLMExtraction("xesam:title 譬如我"); err == nil {
+		t.Fatal("retry 为 0 时失败应直接返回错误")
+	}
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Fatalf("retry 为 0 时只请求 1 次，got %d", got)
+	}
+}
+
+func TestRequestLLMExtractionDoesNotRetryUnparsableOutput(t *testing.T) {
+	server, calls := newFlakyLLMServer(t, 0, "我觉得这个不是歌曲")
+	configureLLMTest(t, server.URL)
+	appConfig.LLM.Retry = 3
+
+	if _, err := requestLLMExtraction("xesam:title 譬如我"); err == nil {
+		t.Fatal("输出无法解析时应返回错误")
+	}
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Fatalf("输出无法解析不应重试，got %d 次请求", got)
+	}
+}
+
+func TestLLMRetryNegativeTreatedAsZero(t *testing.T) {
+	server, calls := newFlakyLLMServer(t, 10, `{"title":"譬如我"}`)
+	configureLLMTest(t, server.URL)
+	appConfig.LLM.Retry = -5
+
+	if _, err := requestLLMExtraction("xesam:title 譬如我"); err == nil {
+		t.Fatal("负数重试次数应按 0 处理并返回错误")
+	}
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Fatalf("负数应视为不重试，got %d 次请求", got)
+	}
+}

@@ -351,3 +351,50 @@ func TestConfigMPRISMSKeepsExplicitValue(t *testing.T) {
 		t.Fatalf("配置应保留显式取值：\n%s", data)
 	}
 }
+
+func TestConfigLLMRetryDefaultsToThree(t *testing.T) {
+	path := migrationFile(t, "mode: mpris\nllm:\n  enable: true\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.LLM.Retry != 3 {
+		t.Fatalf("llm.retry 默认值应为 3，got %d", config.LLM.Retry)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "retry: 3") {
+		t.Fatalf("升级后的配置应补写 retry: 3：\n%s", data)
+	}
+}
+
+func TestConfigLLMRetryKeepsExplicitValue(t *testing.T) {
+	path := migrationFile(t, "mode: mpris\nllm:\n  enable: true\n  retry: 0\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.LLM.Retry != 0 {
+		t.Fatalf("显式 retry: 0 应保留，got %d", config.LLM.Retry)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "retry: 0") {
+		t.Fatalf("不应覆盖显式 retry：\n%s", data)
+	}
+}
+
+func TestConfigLLMRetryNegativeClampedToZero(t *testing.T) {
+	migrationFile(t, "mode: mpris\nllm:\n  enable: true\n  retry: -3\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.LLM.Retry != 0 {
+		t.Fatalf("负数重试次数应归一为 0，got %d", config.LLM.Retry)
+	}
+}
