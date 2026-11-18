@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	// llmRequestTimeout 限制单次请求耗时，避免网络卡住歌词刷新循环。
-	llmRequestTimeout = 10 * time.Second
+	// llmRequestTimeout 限制单次请求耗时。推理类模型的响应常在十秒以上，
+	// 因此放宽到 30s；请求在后台执行，不会卡住歌词刷新循环。
+	llmRequestTimeout = 30 * time.Second
 	// llmFailureTTL 让失败的提取在短时间内不再重试，避免每轮循环都打一遍接口。
 	llmFailureTTL = 60 * time.Second
 	// llmMaxCacheEntries 限制缓存条目数，键随歌曲变化，超出后整体清空。
@@ -38,12 +39,16 @@ type llmCacheEntry struct {
 	extraction llmExtraction
 	err        error
 	expires    time.Time // 零值表示成功结果不主动过期
+	pending    bool      // 后台请求进行中，结果还没写回
 }
 
 var llmCache = struct {
 	mu      sync.Mutex
 	entries map[string]llmCacheEntry
 }{entries: map[string]llmCacheEntry{}}
+
+// llmInFlight 记录后台请求数量，测试可以等它归零后再断言结果。
+var llmInFlight sync.WaitGroup
 
 var (
 	// <think ...>…</think> 需要兼容带属性的写法，大小写与换行都不敏感。
@@ -209,37 +214,59 @@ func callLLMChat(ctx context.Context, prompt string) (string, error) {
 	return parsed.Choices[0].Message.Content, nil
 }
 
-// llmExtractionFor 带缓存的提取入口，键为播放器与原始标题歌手，同一首歌只请求一次。
-// 第二个返回值表示结果是否直接来自缓存，调用方据此避免每轮刷新都打日志。
-func llmExtractionFor(key, metadataText string) (llmExtraction, error, bool) {
+// llmCachedExtraction 读取缓存里的提取结果。第三个返回值为 false 表示结果还没
+// 就绪：此时会在后台发起一次请求（同一首歌请求进行中不会重复发起），调用方
+// 本轮先用原始标题，等下一轮刷新再应用结果。
+func llmCachedExtraction(key, metadataText, rawTitle string) (llmExtraction, error, bool) {
 	llmCache.mu.Lock()
 	if entry, ok := llmCache.entries[key]; ok {
+		if entry.pending {
+			llmCache.mu.Unlock()
+			return llmExtraction{}, nil, false
+		}
 		if entry.expires.IsZero() || time.Now().Before(entry.expires) {
 			llmCache.mu.Unlock()
 			return entry.extraction, entry.err, true
 		}
 		delete(llmCache.entries, key)
 	}
-	llmCache.mu.Unlock()
-
-	extraction, err := requestLLMExtraction(metadataText)
-
-	llmCache.mu.Lock()
 	if len(llmCache.entries) >= llmMaxCacheEntries {
 		llmCache.entries = map[string]llmCacheEntry{}
 	}
-	entry := llmCacheEntry{extraction: extraction, err: err}
-	if err != nil {
-		entry.expires = time.Now().Add(llmFailureTTL)
-	}
-	llmCache.entries[key] = entry
+	llmCache.entries[key] = llmCacheEntry{pending: true}
 	llmCache.mu.Unlock()
-	return extraction, err, false
+
+	llmInFlight.Add(1)
+	go func() {
+		defer llmInFlight.Done()
+
+		extraction, err := requestLLMExtraction(metadataText)
+
+		llmCache.mu.Lock()
+		entry := llmCacheEntry{extraction: extraction, err: err}
+		if err != nil {
+			entry.expires = time.Now().Add(llmFailureTTL)
+		}
+		llmCache.entries[key] = entry
+		llmCache.mu.Unlock()
+
+		// 同一首歌只在这里记一次日志，之后命中缓存不再重复。
+		switch {
+		case err != nil:
+			logEvent("WARN", "LLM 提取歌曲信息失败，改用原始标题「%s」搜索：%v", rawTitle, err)
+		case !extraction.IsSong:
+			logEvent("INFO", "LLM 判定该媒体不是歌曲，按未识别到歌曲处理：「%s」", rawTitle)
+		default:
+			logEvent("DEBUG", "LLM 提取歌曲信息：歌名=%s 歌手=%s", extraction.Title, extraction.Singer)
+		}
+	}()
+	return llmExtraction{}, nil, false
 }
 
 // applyLLMExtraction 用 LLM 从元数据文本里提取歌名与歌手。
 // 返回 false 表示 LLM 判定这不是歌曲，调用方应按「没识别到歌曲」处理，
 // 不再用原始标题去搜索歌词；请求失败或输出无法解析时保留原始标题继续搜索。
+// 请求在后台进行：首次调用只保留原始标题，结果就绪后的下一次调用才覆盖歌名歌手。
 func applyLLMExtraction(metadata *PlayerMetadata, metadataText string) bool {
 	if metadata == nil {
 		return true
@@ -248,22 +275,12 @@ func applyLLMExtraction(metadata *PlayerMetadata, metadataText string) bool {
 		return true
 	}
 	key := metadata.Player + "\x00" + metadata.Title + "\x00" + metadata.Artist
-	extraction, err, cached := llmExtractionFor(key, metadataText)
-	// 同一首歌每轮刷新都会走到这里，结果命中缓存时不再重复记日志。
-	if err != nil {
-		if !cached {
-			logEvent("WARN", "LLM 提取歌曲信息失败，改用原始标题「%s」搜索：%v", metadata.Title, err)
-		}
+	extraction, err, ready := llmCachedExtraction(key, metadataText, metadata.Title)
+	if !ready || err != nil {
 		return true
 	}
 	if !extraction.IsSong {
-		if !cached {
-			logEvent("INFO", "LLM 判定该媒体不是歌曲，按未识别到歌曲处理：「%s」", metadata.Title)
-		}
 		return false
-	}
-	if !cached {
-		logEvent("DEBUG", "LLM 提取歌曲信息：歌名=%s 歌手=%s", extraction.Title, extraction.Singer)
 	}
 	metadata.Title = extraction.Title
 	metadata.Artist = extraction.Singer
