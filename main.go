@@ -648,41 +648,57 @@ func getTTMLLyrics(songID string) *ParsedLyrics {
 	}
 	return lyrics
 }
+
+// lrcLinePattern 匹配 LRC 风格的时间戳。网易云大部分歌词用「[mm:ss.xx]」，
+// 但也有用户上传的歌词用冒号分隔毫秒（「[mm:ss:xx]」，如不少同人曲），
+// 两种都必须认，否则整首歌会被当成没有时间轴。
+var lrcLinePattern = regexp.MustCompile(`\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]`)
+
+// lrcMatchTimeMs 把一条时间戳匹配折算成毫秒。
+func lrcMatchTimeMs(match []string) (int64, bool) {
+	mm, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0, false
+	}
+	ss, err := strconv.Atoi(match[2])
+	if err != nil {
+		return 0, false
+	}
+
+	ms := 0
+	if len(match) > 3 && match[3] != "" {
+		frac := match[3]
+		switch len(frac) {
+		case 1:
+			frac += "00"
+		case 2:
+			frac += "0"
+		}
+		ms, _ = strconv.Atoi(frac)
+	}
+
+	return int64(mm*60*1000 + ss*1000 + ms), true
+}
+
 func parseLRC(content string) []TimedLyricLine {
 	if strings.TrimSpace(content) == "" {
 		return nil
 	}
 
-	lineRe := regexp.MustCompile(`\[(\d{2}):(\d{2})(?:\.(\d{1,3}))?\]`)
 	var result []TimedLyricLine
 
 	for _, line := range strings.Split(content, "\n") {
-		matches := lineRe.FindAllStringSubmatch(line, -1)
+		matches := lrcLinePattern.FindAllStringSubmatch(line, -1)
 		if len(matches) == 0 {
 			continue
 		}
 
-		text := strings.TrimSpace(lineRe.ReplaceAllString(line, ""))
+		text := strings.TrimSpace(lrcLinePattern.ReplaceAllString(line, ""))
 		for _, m := range matches {
-			mm, err1 := strconv.Atoi(m[1])
-			ss, err2 := strconv.Atoi(m[2])
-			if err1 != nil || err2 != nil {
+			timeMs, ok := lrcMatchTimeMs(m)
+			if !ok {
 				continue
 			}
-
-			ms := 0
-			if m[3] != "" {
-				frac := m[3]
-				switch len(frac) {
-				case 1:
-					frac += "00"
-				case 2:
-					frac += "0"
-				}
-				ms, _ = strconv.Atoi(frac)
-			}
-
-			timeMs := int64(mm*60*1000 + ss*1000 + ms)
 			result = append(result, TimedLyricLine{TimeMs: timeMs, Text: text})
 		}
 	}
@@ -699,17 +715,16 @@ func parseLRCWithInlineTranslation(content string) ([]TimedLyricLine, []TimedLyr
 		return nil, nil
 	}
 
-	lineRe := regexp.MustCompile(`\[(\d{2}):(\d{2})(?:\.(\d{1,3}))?\]`)
 	var original []TimedLyricLine
 	var translation []TimedLyricLine
 
 	for _, line := range strings.Split(content, "\n") {
-		matches := lineRe.FindAllStringSubmatch(line, -1)
+		matches := lrcLinePattern.FindAllStringSubmatch(line, -1)
 		if len(matches) == 0 {
 			continue
 		}
 
-		text := strings.TrimSpace(lineRe.ReplaceAllString(line, ""))
+		text := strings.TrimSpace(lrcLinePattern.ReplaceAllString(line, ""))
 		parts := strings.SplitN(text, "|", 2)
 		origText := strings.TrimSpace(parts[0])
 		transText := ""
@@ -718,25 +733,10 @@ func parseLRCWithInlineTranslation(content string) ([]TimedLyricLine, []TimedLyr
 		}
 
 		for _, m := range matches {
-			mm, err1 := strconv.Atoi(m[1])
-			ss, err2 := strconv.Atoi(m[2])
-			if err1 != nil || err2 != nil {
+			timeMs, ok := lrcMatchTimeMs(m)
+			if !ok {
 				continue
 			}
-
-			ms := 0
-			if m[3] != "" {
-				frac := m[3]
-				switch len(frac) {
-				case 1:
-					frac += "00"
-				case 2:
-					frac += "0"
-				}
-				ms, _ = strconv.Atoi(frac)
-			}
-
-			timeMs := int64(mm*60*1000 + ss*1000 + ms)
 			if origText != "" {
 				original = append(original, TimedLyricLine{TimeMs: timeMs, Text: origText})
 			}
