@@ -1,6 +1,6 @@
 pkgbase = waybar-lyrics
 	pkgdesc = Waybar synchronized lyrics from MPRIS, SPlayer, and SPlayer-Next
-	pkgver = 1.5.6
+	pkgver = 1.5.7
 	pkgrel = 1
 	url = https://github.com/kndxhz/waybar-lyrics
 	arch = x86_64
@@ -9,7 +9,7 @@ pkgbase = waybar-lyrics
 	depends = glibc
 	optdepends = playerctl: For media control support
 	conflicts = waybar-lyrics-git
-	source = waybar-lyrics-1.5.6.tar.gz::https://github.com/kndxhz/waybar-lyrics/archive/v1.5.6.tar.gz
-	sha256sums = 92e6a70f6740c29d3b64d77f0962014e29306d76c749662bd4f486a7317eca9c
+	source = waybar-lyrics-1.5.7.tar.gz::https://github.com/kndxhz/waybar-lyrics/archive/v1.5.7.tar.gz
+	sha256sums = 575742dd4703d92eae050881caf5a82e94d45863b201273259d7daf5538be6fe
 
 pkgname = waybar-lyrics
