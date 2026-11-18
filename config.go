@@ -39,8 +39,11 @@ type SPlayerConfig struct {
 	SongIDMode string `yaml:"song_id_mode"`
 	// LatencyMS SPlayer-Next 播放进度经 HTTP API 返回时的网络延迟补偿（毫秒）。
 	// 正数表示歌词提前，负数表示歌词延后，0 表示不补偿。
-	LatencyMS int              `yaml:"latency_ms"`
-	API       SPlayerAPIConfig `yaml:"api,omitempty"`
+	LatencyMS int `yaml:"latency_ms"`
+	// PauseMPRISFallback SPlayer 暂停时改用 MPRIS 读取其他正在播放的媒体源；
+	// SPlayer 与其他媒体源同时在播时仍优先显示 SPlayer。需配合 mpris-fallback。
+	PauseMPRISFallback bool             `yaml:"pause-mpris-fallback"`
+	API                SPlayerAPIConfig `yaml:"api,omitempty"`
 }
 
 type SPlayerAPIConfig struct {
@@ -110,10 +113,11 @@ func defaultConfig() AppConfig {
 		MPRISMS:       defaultMPRISLatencyMS,
 		Log:           LogConfig{Path: "/tmp/waybar-lyrics.log", Level: "INFO"},
 		SPlayer: SPlayerConfig{
-			Address:    "127.0.0.1",
-			Port:       14558,
-			SongIDMode: "auto",
-			LatencyMS:  defaultLyricLatencyMS,
+			Address:            "127.0.0.1",
+			Port:               14558,
+			SongIDMode:         "auto",
+			LatencyMS:          defaultLyricLatencyMS,
+			PauseMPRISFallback: true,
 		},
 		LLM: LLMConfig{
 			Enable:    false,

@@ -14,14 +14,19 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/godbus/dbus/v5"
 )
 
+// splayerNextSnapshot 是 GET /api/now-playing 的轻量快照。
+// Playing 为 nil 表示旧版本接口没有该字段。
 type splayerNextSnapshot struct {
-	Track    json.RawMessage `json:"track"`
-	Playing  json.RawMessage `json:"nowPlaying"`
-	State    string          `json:"state"`
-	Position int64           `json:"position"`
-	Duration int64           `json:"duration"`
+	Track      json.RawMessage `json:"track"`
+	NowPlaying json.RawMessage `json:"nowPlaying"`
+	Position   int64           `json:"position"`
+	Duration   int64           `json:"duration"`
+	Playing    *bool           `json:"playing"`
+	State      string          `json:"state"`
 }
 
 type splayerNextTrack struct {
@@ -47,15 +52,30 @@ type splayerNextTrack struct {
 func getPlayerMetadata() *PlayerMetadata {
 	switch appConfig.Mode {
 	case "splayer-next":
-		if metadata := getSPlayerNextMetadata(); metadata != nil {
+		metadata, playing := getSPlayerNextPlayback()
+		if metadata == nil {
+			return getMPRISFallbackMetadata()
+		}
+		if playing || !splayerPauseFallbackEnabled(appConfig) {
 			return metadata
 		}
-		return getMPRISFallbackMetadata()
+		// SPlayer 暂停时，别的媒体源在播放就切过去；没人在播仍显示 SPlayer。
+		if fallback := getMPRISFallbackMetadataPlaying(); fallback != nil {
+			return fallback
+		}
+		return metadata
 	case "splayer":
-		if metadata := getMPRISMetadata("splayer"); metadata != nil {
+		metadata, status := getMPRISMetadataStatus("splayer")
+		if metadata == nil {
+			return getMPRISFallbackMetadata()
+		}
+		if mprisStatusRank(status) == 0 || !splayerPauseFallbackEnabled(appConfig) {
 			return metadata
 		}
-		return getMPRISFallbackMetadata()
+		if fallback := getMPRISFallbackMetadataPlaying(); fallback != nil {
+			return fallback
+		}
+		return metadata
 	default:
 		return getMPRISMetadata("")
 	}
@@ -65,6 +85,13 @@ func getPlayerMetadata() *PlayerMetadata {
 // mpris 模式本身就走 MPRIS，配置无意义，一律忽略。
 func mprisFallbackEnabled(config AppConfig) bool {
 	return config.Mode != "mpris" && config.MPRISFallback
+}
+
+// splayerPauseFallbackEnabled 判断 SPlayer 暂停时是否允许改用 MPRIS 显示
+// 其他正在播放的媒体源。需要同时开启 mpris-fallback；mpris 模式没有 SPlayer，
+// 该配置没有意义，一律忽略。
+func splayerPauseFallbackEnabled(config AppConfig) bool {
+	return config.Mode != "mpris" && config.MPRISFallback && config.SPlayer.PauseMPRISFallback
 }
 
 // isSPlayerNextMetadata 判断元数据是否来自 SPlayer-Next 的 HTTP API。
@@ -85,6 +112,38 @@ func getMPRISFallbackMetadata() *PlayerMetadata {
 	}
 	logEvent("DEBUG", "SPlayer 不可用，回退到 MPRIS 播放器：%s - %s", metadata.Artist, metadata.Title)
 	return metadata
+}
+
+// getMPRISFallbackMetadataPlaying 只在其他播放器确实正在播放时返回它的元数据，
+// 用于 SPlayer 暂停时切到别的媒体源；回退关闭或没有播放中的播放器时返回 nil。
+func getMPRISFallbackMetadataPlaying() *PlayerMetadata {
+	if !splayerPauseFallbackEnabled(appConfig) {
+		return nil
+	}
+	metadata := getMPRISMetadataFiltered("", true)
+	if metadata == nil {
+		return nil
+	}
+	// 这条日志每个刷新周期都会走到，只在换源时记一次，免得刷屏。
+	if signature := metadata.Player + "\x00" + metadata.Title; signature != lastPauseFallbackLog {
+		lastPauseFallbackLog = signature
+		logEvent("DEBUG", "SPlayer 已暂停，改用 MPRIS 播放器：%s", metadataLabel(metadata))
+	}
+	return metadata
+}
+
+// lastPauseFallbackLog 记录上一次记日志的暂停回退来源，用于去重。
+var lastPauseFallbackLog string
+
+// metadataLabel 把元数据拼成「歌手 - 歌名」，没有歌手时只显示歌名。
+func metadataLabel(metadata *PlayerMetadata) string {
+	if metadata == nil {
+		return ""
+	}
+	if metadata.Artist == "" {
+		return metadata.Title
+	}
+	return metadata.Artist + " - " + metadata.Title
 }
 
 func isPlayerCommand(command string) bool {
@@ -110,6 +169,15 @@ func controlPlayer(command string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// SPlayer 暂停、界面已经切到别的媒体源时，控制也跟着走，避免按钮控制的对象
+	// 和显示的内容对不上；这一步失败再按原来的方式控制 SPlayer。
+	if target := pauseFallbackControlTarget(); target != "" {
+		if err := controlFallbackPlayer(ctx, target, command); err == nil {
+			return nil
+		} else {
+			logEvent("WARN", "控制暂停回退的媒体源 %s 失败，改为控制 SPlayer：%v", target, err)
+		}
+	}
 	switch appConfig.Mode {
 	case "splayer-next":
 		err := controlSPlayerNext(ctx, command)
@@ -134,6 +202,43 @@ func controlPlayer(command string) error {
 	default:
 		return fmt.Errorf("不支持的播放器模式：%s", appConfig.Mode)
 	}
+}
+
+// pauseFallbackControlTarget 返回暂停回退当前显示的 MPRIS 播放器；
+// 空字符串表示暂停回退没有生效，控制命令仍按原方式发给 SPlayer。
+// 抽成变量便于测试注入。
+var pauseFallbackControlTarget = func() string {
+	if !splayerPauseFallbackEnabled(appConfig) {
+		return ""
+	}
+	switch appConfig.Mode {
+	case "splayer-next":
+		metadata, playing := getSPlayerNextPlayback()
+		if metadata == nil || playing {
+			return ""
+		}
+	case "splayer":
+		metadata, status := getMPRISMetadataStatus("splayer")
+		if metadata == nil || mprisStatusRank(status) == 0 {
+			return ""
+		}
+	default:
+		return ""
+	}
+	fallback := getMPRISFallbackMetadataPlaying()
+	if fallback == nil {
+		return ""
+	}
+	return fallback.Player
+}
+
+// controlFallbackPlayer 用 playerctl 控制指定的 MPRIS 播放器。
+func controlFallbackPlayer(ctx context.Context, player, command string) error {
+	if _, err := runPlayerctl(ctx, "--player", player, command); err != nil {
+		return err
+	}
+	logEvent("INFO", "SPlayer 已暂停，已用 playerctl 控制 %s：%s", player, command)
+	return nil
 }
 
 // controlPlayerctlFallback 在启用 mpris-fallback 时按 mpris 模式筛选并控制其他播放器。
@@ -228,18 +333,46 @@ func requestSPlayerControl(ctx context.Context, client *http.Client, baseURL, me
 
 // controlPlayerctlInMode 按指定模式筛选第一个匹配的播放器并交给 playerctl 执行命令。
 func controlPlayerctlInMode(ctx context.Context, mode, command string) error {
-	output, err := runPlayerctl(ctx, "--list-all")
-	if err != nil {
-		return err
+	target := mprisControlTarget(mode)
+	if target == "" {
+		return fmt.Errorf("未找到 %s 模式可控制的 MPRIS 播放器", mode)
 	}
-	for _, line := range strings.Split(string(output), "\n") {
-		player := strings.TrimSpace(line)
-		if player != "" && matchesPlayerMode(player, mode) {
-			_, err := runPlayerctl(ctx, "--player", player, command)
-			return err
+	// 显式指定要控制的播放器，不依赖 playerctl --list-all 的返回顺序。
+	_, err := runPlayerctl(ctx, "--player", target, command)
+	return err
+}
+
+// mprisControlTarget 选出要控制的 MPRIS 播放器短名。与歌词读取用同一份播放器
+// 列表和筛选规则（模式过滤 + PlaybackStatus 排名），不再靠 --list-all 猜。
+// 抽成变量便于测试注入。
+var mprisControlTarget = func(mode string) string {
+	conn, err := dbus.SessionBus()
+	if err != nil {
+		return ""
+	}
+	names, err := mprisBusNames(conn)
+	if err != nil {
+		return ""
+	}
+	best := ""
+	bestRank := 3
+	for _, name := range names {
+		if !strings.HasPrefix(name, mprisBusPrefix) {
+			continue
+		}
+		shortName := strings.TrimPrefix(name, mprisBusPrefix)
+		if !matchesPlayerMode(shortName, mode) {
+			continue
+		}
+		status, ok := readMPRISPlaybackStatus(conn, name)
+		if !ok {
+			continue
+		}
+		if rank := mprisStatusRank(status); rank < bestRank {
+			best, bestRank = shortName, rank
 		}
 	}
-	return fmt.Errorf("未找到 %s 模式可控制的 MPRIS 播放器", mode)
+	return best
 }
 
 func runPlayerctl(ctx context.Context, args ...string) ([]byte, error) {
@@ -309,14 +442,23 @@ func fetchJSON(path string, target any) bool {
 }
 
 func getSPlayerNextMetadata() *PlayerMetadata {
-	var raw struct {
-		Track      json.RawMessage `json:"track"`
-		NowPlaying json.RawMessage `json:"nowPlaying"`
-		Position   int64           `json:"position"`
-		Duration   int64           `json:"duration"`
-	}
+	metadata, _ := getSPlayerNextPlayback()
+	return metadata
+}
+
+// getSPlayerNextPlayback 读取 SPlayer-Next 当前曲目，并返回它是否正在播放。
+// 旧版本接口没有 state / playing 字段时按正在播放处理，保持原有行为。
+func getSPlayerNextPlayback() (*PlayerMetadata, bool) {
+	var raw splayerNextSnapshot
 	if !fetchJSON("/now-playing", &raw) {
-		return nil
+		return nil, false
+	}
+	playing := true
+	switch state := strings.ToLower(strings.TrimSpace(raw.State)); {
+	case state != "":
+		playing = state == "playing"
+	case raw.Playing != nil:
+		playing = *raw.Playing
 	}
 	trackData := raw.Track
 	if len(trackData) == 0 {
@@ -331,17 +473,17 @@ func getSPlayerNextMetadata() *PlayerMetadata {
 	}
 	var track splayerNextTrack
 	if len(trackData) == 0 || json.Unmarshal(trackData, &track) != nil {
-		return nil
+		return nil, false
 	}
 	if track.Title == "" {
-		return nil
+		return nil, false
 	}
 	artist := ""
 	if len(track.Artists) > 0 {
 		artist = track.Artists[0].Name
 	}
 	if artist == "" {
-		return nil
+		return nil, false
 	}
 	metadata := &PlayerMetadata{Player: "splayer-next", TrackID: track.ID, Source: track.Source, Title: track.Title, Artist: artist, Album: track.Album.Name, Duration: track.Duration * 1000, ArtUrl: track.Cover}
 	if raw.Position > 0 {
@@ -361,7 +503,7 @@ func getSPlayerNextMetadata() *PlayerMetadata {
 		}
 	}
 	metadata.Lyrics = getSPlayerNextLyrics()
-	return metadata
+	return metadata, playing
 }
 
 func getSPlayerNextLyrics() *ParsedLyrics {

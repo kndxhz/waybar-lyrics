@@ -881,16 +881,32 @@ type mprisPlayerData struct {
 // 而 ListNames 的返回顺序并不代表谁在播放，因此不能直接取第一个匹配项：
 // 必须遍历所有符合模式的播放器，跳过读不到歌名的服务，并优先选择正在播放的那个。
 func getMPRISMetadata(preferred string) *PlayerMetadata {
+	return getMPRISMetadataFiltered(preferred, false)
+}
+
+// getMPRISMetadataStatus 返回选中播放器的元数据与 PlaybackStatus。
+func getMPRISMetadataStatus(preferred string) (*PlayerMetadata, string) {
+	return readMPRISMetadata(preferred, false)
+}
+
+// getMPRISMetadataFiltered 读取 MPRIS 元数据；playingOnly 为 true 时只考虑
+// 正在播放的播放器，用于 SPlayer 暂停后切到别的媒体源。
+func getMPRISMetadataFiltered(preferred string, playingOnly bool) *PlayerMetadata {
+	metadata, _ := readMPRISMetadata(preferred, playingOnly)
+	return metadata
+}
+
+func readMPRISMetadata(preferred string, playingOnly bool) (*PlayerMetadata, string) {
 	conn, err := dbus.SessionBus()
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 	// 会话总线是进程内共享连接，关闭它会同时断开其他使用者（例如同一进程里
 	// 导出的假 MPRIS 服务），因此这里只复用、不关闭。
 
 	names, err := mprisBusNames(conn)
 	if err != nil {
-		return nil
+		return nil, ""
 	}
 
 	mode := preferred
@@ -912,24 +928,41 @@ func getMPRISMetadata(preferred string) *PlayerMetadata {
 		if !ok {
 			continue
 		}
+		if playingOnly && mprisStatusRank(status) != 0 {
+			continue
+		}
 		candidates = append(candidates, mprisPlayerData{name: shortName, status: status, metadata: metadata})
 	}
 
-	return chooseMPRISPlayer(candidates)
+	chosen := chooseMPRISPlayerData(candidates)
+	if chosen == nil {
+		return nil, ""
+	}
+	return chosen.metadata, chosen.status
 }
 
 // chooseMPRISPlayer 在候选播放器里挑一个：正在播放优先，其次暂停，
 // 同一状态保留先出现的那个。没有可用候选时返回 nil。
 func chooseMPRISPlayer(candidates []mprisPlayerData) *PlayerMetadata {
-	var best *PlayerMetadata
+	chosen := chooseMPRISPlayerData(candidates)
+	if chosen == nil {
+		return nil
+	}
+	return chosen.metadata
+}
+
+// chooseMPRISPlayerData 与 chooseMPRISPlayer 一致，但连同状态一起返回。
+func chooseMPRISPlayerData(candidates []mprisPlayerData) *mprisPlayerData {
+	var best *mprisPlayerData
 	bestRank := 0
-	for _, candidate := range candidates {
+	for index := range candidates {
+		candidate := &candidates[index]
 		if candidate.metadata == nil || candidate.metadata.Title == "" {
 			continue
 		}
 		rank := mprisStatusRank(candidate.status)
 		if best == nil || rank < bestRank {
-			best, bestRank = candidate.metadata, rank
+			best, bestRank = candidate, rank
 		}
 	}
 	return best
@@ -945,6 +978,22 @@ func mprisStatusRank(status string) int {
 	default:
 		return 2
 	}
+}
+
+// readMPRISPlaybackStatus 只读一台播放器的 PlaybackStatus，用于控制命令挑选目标。
+func readMPRISPlaybackStatus(conn *dbus.Conn, busName string) (string, bool) {
+	var variant dbus.Variant
+	err := conn.Object(busName, "/org/mpris/MediaPlayer2").
+		Call("org.freedesktop.DBus.Properties.Get", 0, "org.mpris.MediaPlayer2.Player", "PlaybackStatus").
+		Store(&variant)
+	if err != nil {
+		return "", false
+	}
+	status, ok := variant.Value().(string)
+	if !ok || strings.TrimSpace(status) == "" {
+		return "", false
+	}
+	return status, true
 }
 
 // readMPRISPlayer 读取单个播放器的元数据。没有可用歌名（未播放、没有曲目、
