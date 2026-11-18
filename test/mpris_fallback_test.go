@@ -55,8 +55,20 @@ func fakeMPRIS(t *testing.T, name, title, artist, status string) *dbus.Conn {
 	return conn
 }
 
+// onlyMPRISPlayers 固定会话总线上的播放器列表，避免本机其他正在播放的
+// 播放器（例如浏览器）抢走选择结果。
+func onlyMPRISPlayers(t *testing.T, names ...string) {
+	t.Helper()
+	old := mprisBusNames
+	mprisBusNames = func(*dbus.Conn) ([]string, error) {
+		return append([]string{"org.freedesktop.DBus"}, names...), nil
+	}
+	t.Cleanup(func() { mprisBusNames = old })
+}
+
 func TestGetMPRISMetadataReadsPlayer(t *testing.T) {
 	fakeMPRIS(t, "org.mpris.MediaPlayer2.fallbacktest", "回退歌曲", "回退歌手", "Playing")
+	onlyMPRISPlayers(t, "org.mpris.MediaPlayer2.fallbacktest")
 
 	metadata := getMPRISMetadata("")
 	if metadata == nil {
@@ -76,6 +88,7 @@ func TestGetPlayerMetadataFallsBackToMPRIS(t *testing.T) {
 	t.Cleanup(func() { appConfig = oldConfig })
 
 	fakeMPRIS(t, "org.mpris.MediaPlayer2.fallbacktest", "回退歌曲", "回退歌手", "Playing")
+	onlyMPRISPlayers(t, "org.mpris.MediaPlayer2.fallbacktest")
 
 	// SPlayer-Next 的 API 指向未监听的端口，读不到歌曲后应回退到 MPRIS。
 	appConfig.Mode = "splayer-next"

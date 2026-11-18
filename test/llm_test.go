@@ -186,6 +186,8 @@ func TestApplyLLMExtractionSingerNullSearchesTitleOnly(t *testing.T) {
 func TestApplyLLMExtractionKeepsTitleOnFailure(t *testing.T) {
 	server, calls := newLLMServer(t, "xesam:title 原始标题", "", http.StatusInternalServerError)
 	configureLLMTest(t, server.URL)
+	// 这里只验证失败后的缓存行为，关闭重试以免请求次数受 llm.retry 影响。
+	appConfig.LLM.Retry = 0
 
 	metadata := &PlayerMetadata{Player: "firefox.instance1", Title: "原始标题", Artist: "原始歌手"}
 	if !applyLLMExtraction(metadata, "xesam:title 原始标题") {

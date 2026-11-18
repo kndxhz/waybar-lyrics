@@ -859,6 +859,16 @@ func buildCurrentLyricText(metadata *PlayerMetadata, lyrics *ParsedLyrics) strin
 // mprisBusPrefix 是 MPRIS 播放器在会话总线上的服务名前缀。
 const mprisBusPrefix = "org.mpris.MediaPlayer2."
 
+// mprisBusNames 读取会话总线上的全部服务名，测试可替换它固定播放器列表，
+// 避免本机正在播放的播放器干扰选择结果。
+var mprisBusNames = func(conn *dbus.Conn) ([]string, error) {
+	var names []string
+	if err := conn.BusObject().Call("org.freedesktop.DBus.ListNames", 0).Store(&names); err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
 // mprisPlayerData 是一台 MPRIS 播放器的读取结果，用于在多个播放器之间挑选。
 type mprisPlayerData struct {
 	name     string // 播放器短名，如 vlc、firefox.instance_1_2
@@ -878,8 +888,8 @@ func getMPRISMetadata(preferred string) *PlayerMetadata {
 	// 会话总线是进程内共享连接，关闭它会同时断开其他使用者（例如同一进程里
 	// 导出的假 MPRIS 服务），因此这里只复用、不关闭。
 
-	var names []string
-	if err := conn.BusObject().Call("org.freedesktop.DBus.ListNames", 0).Store(&names); err != nil {
+	names, err := mprisBusNames(conn)
+	if err != nil {
 		return nil
 	}
 
