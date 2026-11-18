@@ -92,19 +92,19 @@ func TestMainPlaybackControlIsolated(t *testing.T) {
 			name: "CLI override toggles playing API once",
 			mode: "mpris", args: []string{"--mode", "splayer-next", "play-pause"},
 			apiStatus: http.StatusOK, wantExit: 0,
-			wantCalls: []string{"GET /api/status", "POST /api/pause"},
+			wantCalls: []string{"GET /api/now-playing", "GET /api/status", "POST /api/pause"},
 		},
 		{
 			name: "configured API mode advances once",
 			mode: "splayer-next", args: []string{"next"},
 			apiStatus: http.StatusOK, wantExit: 0,
-			wantCalls: []string{"POST /api/next"},
+			wantCalls: []string{"GET /api/now-playing", "POST /api/next"},
 		},
 		{
 			name: "API failure reports runtime exit",
 			mode: "splayer-next", args: []string{"next"},
 			apiStatus: http.StatusServiceUnavailable, wantExit: 1,
-			wantCalls: []string{"POST /api/next"},
+			wantCalls: []string{"GET /api/now-playing", "POST /api/next"},
 		},
 		{
 			name: "invalid command reports usage without API",
@@ -121,6 +121,9 @@ func TestMainPlaybackControlIsolated(t *testing.T) {
 					return
 				}
 				switch r.URL.Path {
+				case "/api/now-playing":
+					// 控制前会先问一次 SPlayer 是否暂停，判断要不要把控制权交给别的媒体源。
+					fmt.Fprint(w, `{"playing":true,"state":"playing"}`)
 				case "/api/status":
 					fmt.Fprint(w, `{"state":"playing"}`)
 				case "/api/pause", "/api/next":

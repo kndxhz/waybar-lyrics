@@ -144,6 +144,10 @@ func configureControlTest(t *testing.T, mode, address string) {
 	appConfig.Mode = mode
 	appConfig.SPlayer.Address = address
 	appConfig.SPlayer.Port = 0
+	// 暂停回退会让控制命令改投 playerctl，这里默认关掉，避免用例受真实播放器影响。
+	oldTarget := pauseFallbackControlTarget
+	pauseFallbackControlTarget = func() string { return "" }
+	t.Cleanup(func() { pauseFallbackControlTarget = oldTarget })
 }
 
 // PATH contains only this fake, so no test can control a real desktop player.
@@ -379,57 +383,73 @@ func TestControlPlayerSPlayerNextWithoutPlayerctl(t *testing.T) {
 	}
 	recorder.assert(t, "POST /api/next")
 }
-
-func TestControlPlayerMPRISSelectsFirstMatchingPlayer(t *testing.T) {
-	for _, test := range []struct{ mode, players, selected string }{
-		{"splayer", "spotify.instance1\norg.mpris.MediaPlayer2.SPLAYER.instance42\nsplayer.second\n", "org.mpris.MediaPlayer2.SPLAYER.instance42"},
-		{"mpris", "SPLAYER.instance42\nSpotify.instance1\nvlc.instance2\n", "Spotify.instance1"},
-	} {
-		for _, command := range []string{"play", "pause", "play-pause", "next", "previous", "stop"} {
-			t.Run(test.mode+"/"+command, func(t *testing.T) {
-				logPath := installControlPlayerctl(t, test.players, "0", "0")
-				server, recorder := newControlAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
-					_, _ = io.WriteString(w, `{"ok":true}`)
-				})
-				configureControlTest(t, test.mode, server.URL)
-				if err := controlPlayer(command); err != nil {
-					t.Fatalf("controlPlayer(%q): %v", command, err)
-				}
-				assertControlPlayerctlCalls(t, logPath, []string{"call\t--list-all", "call\t--player\t" + test.selected + "\t" + command})
-				recorder.assert(t)
+func TestControlPlayerMPRISControlsSelectedPlayer(t *testing.T) {
+	// 目标播放器由 MPRIS 侧按 PlaybackStatus 选出，playerctl 只负责控制它。
+	for _, command := range []string{"play", "pause", "play-pause", "next", "previous", "stop"} {
+		t.Run("mpris/"+command, func(t *testing.T) {
+			logPath := installControlPlayerctl(t, "", "0", "0")
+			fakeMPRIS(t, "org.mpris.MediaPlayer2.pausedcheck", "暂停的歌", "歌手", "Paused")
+			fakeMPRIS(t, "org.mpris.MediaPlayer2.playingcheck", "在播的歌", "歌手", "Playing")
+			onlyMPRISPlayers(t, "org.mpris.MediaPlayer2.pausedcheck", "org.mpris.MediaPlayer2.playingcheck")
+			server, recorder := newControlAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, `{"ok":true}`)
 			})
-		}
+			configureControlTest(t, "mpris", server.URL)
+			if err := controlPlayer(command); err != nil {
+				t.Fatalf("controlPlayer(%q): %v", command, err)
+			}
+			assertControlPlayerctlCalls(t, logPath, []string{"call\t--player\tplayingcheck\t" + command})
+			recorder.assert(t)
+		})
 	}
+}
+
+func TestControlPlayerSPlayerModeControlsSPlayer(t *testing.T) {
+	logPath := installControlPlayerctl(t, "", "0", "0")
+	fakeMPRIS(t, "org.mpris.MediaPlayer2.splayer_next.instance1", "播放中的歌", "歌手", "Playing")
+	fakeMPRIS(t, "org.mpris.MediaPlayer2.spotify.instance1", "别的歌", "别的歌手", "Playing")
+	onlyMPRISPlayers(t, "org.mpris.MediaPlayer2.splayer_next.instance1", "org.mpris.MediaPlayer2.spotify.instance1")
+	server, recorder := newControlAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	})
+	configureControlTest(t, "splayer", server.URL)
+
+	if err := controlPlayer("play-pause"); err != nil {
+		t.Fatalf("controlPlayer: %v", err)
+	}
+	assertControlPlayerctlCalls(t, logPath, []string{"call\t--player\tsplayer_next.instance1\tplay-pause"})
+	recorder.assert(t)
 }
 
 func TestControlPlayerMPRISErrorsNeverUseHTTP(t *testing.T) {
 	for _, test := range []struct {
-		name, mode, players, listExit, commandExit, selected string
+		name        string
+		mode        string
+		players     []string
+		commandExit string
+		wantCalls   []string
 	}{
-		{"splayer empty list", "splayer", "", "0", "0", ""},
-		{"mpris empty list", "mpris", "", "0", "0", ""},
-		{"splayer no match", "splayer", "spotify\nvlc\n", "0", "0", ""},
-		{"mpris excludes splayer", "mpris", "SPLAYER\nsplayer.instance2\n", "0", "0", ""},
-		{"splayer list failure", "splayer", "splayer\n", "2", "0", ""},
-		{"mpris list failure", "mpris", "spotify\n", "2", "0", ""},
-		{"splayer command failure", "splayer", "splayer\n", "0", "3", "splayer"},
-		{"mpris command failure", "mpris", "spotify\n", "0", "3", "spotify"},
+		{"没有注册的播放器", "mpris", nil, "0", nil},
+		{"splayer 模式排除其他播放器", "splayer", []string{"org.mpris.MediaPlayer2.spotify.instance1"}, "0", nil},
+		{"mpris 模式排除 SPlayer", "mpris", []string{"org.mpris.MediaPlayer2.splayer_next.instance1"}, "0", nil},
+		{"playerctl 命令失败", "mpris", []string{"org.mpris.MediaPlayer2.spotify.instance1"}, "3",
+			[]string{"call\t--player\tspotify.instance1\tplay"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			logPath := installControlPlayerctl(t, test.players, test.listExit, test.commandExit)
+			logPath := installControlPlayerctl(t, "", "0", test.commandExit)
+			for index, name := range test.players {
+				fakeMPRIS(t, name, "歌名"+string(rune('A'+index)), "歌手", "Playing")
+			}
+			onlyMPRISPlayers(t, test.players...)
 			server, recorder := newControlAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 				_, _ = io.WriteString(w, `{"ok":true}`)
 			})
 			configureControlTest(t, test.mode, server.URL)
 			disableControlFallback(t)
 			if err := controlPlayer("play"); err == nil {
-				t.Fatal("missing player or failed subprocess should return an error")
+				t.Fatal("没有可控制的播放器或子进程失败时应返回错误")
 			}
-			want := []string{"call\t--list-all"}
-			if test.selected != "" {
-				want = append(want, "call\t--player\t"+test.selected+"\tplay")
-			}
-			assertControlPlayerctlCalls(t, logPath, want)
+			assertControlPlayerctlCalls(t, logPath, test.wantCalls)
 			recorder.assert(t)
 		})
 	}
@@ -439,12 +459,22 @@ func TestControlPlayerMPRISMissingPlayerctl(t *testing.T) {
 	for _, mode := range []string{"splayer", "mpris"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("PATH", t.TempDir())
+			name := "org.mpris.MediaPlayer2.missingcheck"
+			if mode == "splayer" {
+				name = "org.mpris.MediaPlayer2.splayer_next.instance1"
+			}
+			fakeMPRIS(t, name, "歌名", "歌手", "Playing")
+			onlyMPRISPlayers(t, name)
 			server, recorder := newControlAPIServer(t, func(w http.ResponseWriter, r *http.Request) {
 				_, _ = io.WriteString(w, `{"ok":true}`)
 			})
 			configureControlTest(t, mode, server.URL)
-			if err := controlPlayer("play"); err == nil {
-				t.Fatal("missing playerctl should return an error")
+			err := controlPlayer("play")
+			if err == nil {
+				t.Fatal("缺少 playerctl 时应返回错误")
+			}
+			if !strings.Contains(err.Error(), "playerctl") {
+				t.Fatalf("错误应提示缺少 playerctl：%v", err)
 			}
 			recorder.assert(t)
 		})

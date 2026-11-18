@@ -398,3 +398,32 @@ func TestConfigLLMRetryNegativeClampedToZero(t *testing.T) {
 		t.Fatalf("负数重试次数应归一为 0，got %d", config.LLM.Retry)
 	}
 }
+
+func TestConfigPauseMPRISFallbackDefaultsToTrue(t *testing.T) {
+	path := migrationFile(t, "mode: splayer-next\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !config.SPlayer.PauseMPRISFallback {
+		t.Fatalf("pause-mpris-fallback 应默认开启：%+v", config.SPlayer)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "pause-mpris-fallback: true") {
+		t.Errorf("配置文件缺少 pause-mpris-fallback：%s", data)
+	}
+}
+
+func TestConfigPauseMPRISFallbackKeepsExplicitFalse(t *testing.T) {
+	migrationFile(t, "mode: splayer-next\nsplayer:\n  pause-mpris-fallback: false\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.SPlayer.PauseMPRISFallback {
+		t.Fatalf("显式关闭应保留：%+v", config.SPlayer)
+	}
+}
