@@ -25,7 +25,7 @@ var base_lrclib = "https://lrclib.net"
 var base_ttml = "https://raw.githubusercontent.com/amll-dev/amll-ttml-db/main/ncm-lyrics"
 
 // version 为当前发布版本，可用 -ldflags "-X main.version=…" 覆盖
-var version = "1.5.9"
+var version = "1.5.10"
 
 // 歌词来源标识，会追加到 Waybar tooltip 中
 const (
