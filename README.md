@@ -6,136 +6,78 @@
 
 ## 安装
 
-### Arch Linux（AUR）
+Arch Linux（AUR）：
 
 ```bash
 yay -S waybar-lyrics
 ```
 
-包中二进制安装在 `/usr/bin/waybar-lyrics`，可直接用 `waybar-lyrics` 调用。
-
-### 预编译二进制
-
-从 [Releases](https://github.com/kndxhz/waybar-lyrics/releases) 下载对应架构的静态二进制，安装到 PATH 中的目录：
+预编译二进制：从 [Releases](https://github.com/kndxhz/waybar-lyrics/releases) 下载对应架构，安装到 PATH 中的目录：
 
 ```bash
 chmod +x waybar-lyrics-linux-amd64
 sudo install -Dm755 waybar-lyrics-linux-amd64 /usr/local/bin/waybar-lyrics
 ```
 
-### 手动编译
+手动编译需要 Go：`go build -o waybar-lyrics` 后同样安装到 PATH。`mpris` / `splayer` 模式的播放控制需要 `playerctl`，仅显示歌词不需要。
 
-需要 Go。`mpris` / `splayer` 模式的播放控制需要安装 `playerctl`；`splayer-next` 模式只使用 HTTP API，不依赖 `playerctl`。仅显示歌词不需要 `playerctl`。
-
-```bash
-git clone https://github.com/kndxhz/waybar-lyrics.git
-cd waybar-lyrics
-go build -o waybar-lyrics
-sudo install -Dm755 waybar-lyrics /usr/bin/waybar-lyrics
-```
-
-安装完成后可运行 `waybar-lyrics --version`（或 `-V`）确认版本。
+安装后可用 `waybar-lyrics --version`（或 `-V`）确认版本。
 
 ## 配置
 
-配置文件为 `~/.config/waybar-lyrics/waybar-lyrics.yaml`，首次运行自动生成：
+配置文件为 `~/.config/waybar-lyrics/waybar-lyrics.yaml`，首次运行自动生成；升级后缺失的新配置项会自动补写，已有取值不会被覆盖。
 
 ```yaml
 mode: splayer-next   # mpris、splayer 或 splayer-next
-mpris-fallback: true # SPlayer 模式读不到歌曲时回退到 MPRIS；mpris 模式下忽略该项
+mpris-fallback: true # SPlayer 读不到歌曲时回退到 MPRIS；mpris 模式下忽略
 mpris-ms: 500        # MPRIS 来源歌词的时间补偿（毫秒）：正数提前，负数延后，0 关闭
 splayer:
   address: 127.0.0.1 # SPlayer-Next API 地址
   port: 14558        # SPlayer-Next API 端口
   song_id_mode: auto # auto：优先使用播放器歌曲 ID；search：按歌名歌手搜索
-  latency_ms: 100    # 歌词时间补偿（毫秒）：正数提前，负数延后，0 关闭
+  latency_ms: 100    # SPlayer-Next 歌词时间补偿（毫秒），含义同上
 log:
   path: /tmp/waybar-lyrics.log
   level: INFO        # DEBUG、INFO、WARN 或 ERROR
 llm:
-  enable: false      # 是否用 LLM 从 MPRIS 元数据里提取歌名歌手
+  enable: false      # 是否用 LLM 从 MPRIS 元数据提取歌名歌手
   base_url: https://api.deepseek.com/v1 # OpenAI 兼容接口地址
   model_name: deepseek-flash
   api_key: xxx       # 接口密钥，按需替换
-  prompt: |-         # {metadata} 会被替换成播放器元数据
+  prompt: |-         # {metadata} 会替换成播放器元数据
     基于以下内容，如果这个媒体是歌曲，提取这个媒体的歌名，输出{"title":"歌名","singer":"歌手"}，歌名不要包含歌手，歌手如果数据内没有，不要瞎猜，只需要输出为null。如果不是歌曲，输出{"is_song":false}
 
     {metadata}
 ```
 
-`--mode`/`-m` 可临时覆盖配置文件中的模式。
-
-`mpris-fallback` 为顶层布尔值，默认 `true`。旧配置文件缺少该项时会自动补写；`mode` 为 `mpris` 时该项无意义，程序启动时会记一条 `WARN` 日志说明已忽略。
-
-`mpris-ms` 为顶层整数，默认 `500`，含义与 `splayer.latency_ms` 相同（正数提前、负数延后、0 关闭）。它作用于所有从 MPRIS 读取歌曲的情况：`mpris` 模式，以及 `splayer` / `splayer-next` 回退到 MPRIS 时；SPlayer-Next 自己通过 HTTP API 提供的进度仍用 `splayer.latency_ms`。
-
-日志默认写入 `/tmp/waybar-lyrics.log`，每次启动时清空；仅 `DEBUG` 级别记录完整歌词。
+`--mode` / `-m` 可临时覆盖配置文件中的模式。`mpris-ms` 作用于 `mpris` 模式以及 SPlayer 回退到 MPRIS 的情况；SPlayer-Next 通过 HTTP API 提供的进度仍用 `splayer.latency_ms`。日志每次启动时清空，仅 `DEBUG` 级别记录完整歌词。
 
 ### 播放器模式
 
-- `mpris`：普通 MPRIS 播放器（Spotify、VLC、mpv 等）。播放器没有网易云歌曲 ID，按歌名和歌手搜索。
+- `mpris`：普通 MPRIS 播放器（Spotify、VLC、mpv 等），按歌名和歌手搜索。
 - `splayer`：旧版 SPlayer，歌曲 ID 取自 MPRIS。
-- `splayer-next`：通过 SPlayer-Next 外部 API 读取曲目和歌词，优先显示播放器提供的歌词，并补偿网络延迟。需在 SPlayer-Next 设置中开启外部 API。
+- `splayer-next`：通过 SPlayer-Next 外部 API 读取曲目和歌词，优先显示播放器提供的歌词。需在 SPlayer-Next 设置中开启外部 API。
 
-#### `mpris` 模式下的播放器适配
+同一时刻可能有多台播放器注册 MPRIS（浏览器即使没有播放也会常驻），程序会遍历所有播放器，跳过读不到歌名的服务，并按 `PlaybackStatus` 优先选择正在播放的那台。标题里的扩展名、音轨号、站点后缀以及 `歌手 - 歌名` 格式会被清洗后再用于搜索。
 
-同一时刻可能有多台播放器注册 MPRIS，浏览器即使没有播放也会常驻注册（`Metadata` 里只有时长），而且 `ListNames` 的返回顺序并不代表谁在播放。程序会遍历所有符合条件的播放器，跳过读不到可用歌名的服务，并按 `PlaybackStatus` 优先选择正在播放的那台（其次暂停），所以"浏览器空闲 + VLC 在播"也能取到 VLC 的歌词。
+`splayer` / `splayer-next` 读不到歌曲时，`mpris-fallback` 会让程序改用 MPRIS 读取其他播放器（排除 SPlayer 自身）；回退得到的歌词不做 `latency_ms` 补偿，也不会等待播放器 API 歌词。
 
-各播放器上报的字段差异及处理方式：
+### 基于 LLM 的歌曲信息提取
 
-| 播放器 | 上报情况 | 处理 |
-| --- | --- | --- |
-| Chromium / Chrome / Edge | 网页 MediaSession 提供完整标题、歌手列表、专辑；空闲时只有 `mpris:length` | 多个歌手拼成 `"歌手A, 歌手B"`；无歌名直接跳过 |
-| Firefox | `xesam:title` 是网页标题，`xesam:artist` 常是空字符串（或只含空串的列表） | 去掉 ` - YouTube Music` 等站点后缀；歌手为空时按歌名搜索 |
-| VLC | 标签字段完整，但空闲时可能把播放器名当歌名 | 播放器名、`unknown` 等占位标题不参与搜索 |
-| mpv（mpv-mpris） | 有标签时字段完整；播放网络流时歌名为空，只有 `xesam:url` | 歌名为空时从 URL 文件名推断，并去掉 `.m3u8` 等扩展名 |
-| Telegram Desktop | 播放音乐文件时标题是文件名（`歌手 - 歌名.mp3`）；语音消息只有占位标题 | 去扩展名、按 ` - ` 拆分歌手歌名；`voice message`/`语音消息` 等占位标题视为没有歌名 |
-| 本地文件（任意播放器） | 标题常是文件名，可能带音轨号（`01 - 歌手 - 歌名.flac`） | 去扩展名与音轨号，再拆分歌手歌名 |
+`llm.enable` 开启后，凡是通过 MPRIS 取到的歌曲都会先把播放器元数据交给 OpenAI 兼容接口，由模型判断是否为歌曲并提取歌名、歌手，再按「歌手 歌名」搜索。
 
-三种模式都可用 `song_id_mode: search` 强制按歌名和歌手搜索。`splayer-next` 的自动模式在尚未取得有效歌曲 ID 时，每隔 5 秒检查一次，最多检查 5 次后按歌名和歌手搜索；等待期间仍可显示播放器 API 提供的歌词。网易云以外来源的 ID 不用于查询网易云歌词。歌词查询依次尝试 TTML、网易云和 LRCLib；网易云搜索不到 ID 时直接尝试 LRCLib，LRCLib 使用播放器提供的歌曲信息。
-
-#### `splayer` / `splayer-next` 的 MPRIS 回退
-
-`mpris-fallback`（默认 `true`）让 SPlayer 模式在以下情况自动改用 MPRIS 读取其他播放器的歌曲：
-
-- `splayer-next`：SPlayer-Next 的外部 API 连不通，或接口读不到当前曲目；
-- `splayer`：MPRIS 上找不到 SPlayer，或从 SPlayer 读不到歌名。
-
-回退时沿用 `mpris` 模式的规则：遍历所有 MPRIS 播放器，排除 SPlayer 自身，优先正在播放的那台。回退得到的歌名来自 D-Bus，不做 `splayer.latency_ms` 网络延迟补偿，改为按顶层 `mpris-ms` 补偿，也不会等待播放器 API 歌词，直接按歌名和歌手搜索歌词。把 `mpris-fallback` 设为 `false` 可关闭回退，此时 SPlayer 读不到歌曲就显示为没有播放中的曲目。
-
-#### 基于 LLM 的歌曲信息提取
-
-`llm.enable`（默认 `false`）开启后，凡是通过 MPRIS 取到的歌曲（`mpris` 模式，以及 `splayer` / `splayer-next` 的回退）都会先把播放器元数据交给 OpenAI 兼容接口，由模型判断是否为歌曲并提取歌名、歌手，再按「歌手 歌名」搜索歌词。
-
-- `llm.base_url` 默认 `https://api.deepseek.com/v1`，程序请求 `{base_url}/chat/completions`。
-- `llm.model_name` 默认 `deepseek-flash`；`llm.api_key` 默认 `xxx`，需替换为可用密钥。
-- `llm.prompt` 是提取指令，其中 `{metadata}` 会被替换成播放器元数据的完整内容（形如 `xesam:title 歌名`、`xesam:artist 歌手` 的多行文本）。旧配置文件缺少 `llm` 节或其中个别字段时自动补默认值，不覆盖已显式设置的值。
-- 模型返回的原始文本会先清洗（去掉 `<think>` 思考标签及带属性的写法、markdown 代码块标记），再截取首个 `{` 到最后一个 `}` 解析 JSON。
-- 返回 `{"title":"歌名","singer":"歌手"}` 时按「歌手 歌名」搜索；`singer` 为 `null` 时只用歌名搜索。
-- 返回 `{"is_song":false}` 时按没识别到歌曲处理：跳过这台播放器，不用原始标题搜索歌词（多台播放器时继续尝试其他播放器）。
-- 接口超时、输出无法解析或未配置密钥时不会中断歌词显示，程序记录日志后沿用播放器原始标题搜索。
-- 同一首歌只请求一次，命中缓存时不重复记日志；失败结果在 60 秒内不再重试，避免每轮刷新都打接口。
+- `llm.prompt` 中的 `{metadata}` 会替换成播放器元数据（形如 `xesam:title 歌名` 的多行文本）。
+- 判定非歌曲时按没识别到歌曲处理，不再用原始标题搜索；接口失败或输出无法解析时仍沿用原始标题，歌词显示不中断。
+- `api_key` 默认 `xxx`，需替换为可用密钥。同一首歌只请求一次。
 
 ## 播放控制
 
-程序内提供统一控制入口，读取同一份 YAML 配置，也支持用 `--mode` / `-m` 临时切换：
-
 ```bash
-waybar-lyrics play          # 播放 / 恢复
-waybar-lyrics pause         # 暂停
-waybar-lyrics play-pause    # 播放 / 暂停切换
-waybar-lyrics next          # 下一首
-waybar-lyrics previous      # 上一首
-waybar-lyrics stop          # 停止
-waybar-lyrics --mode splayer-next play-pause
+waybar-lyrics play | pause | play-pause | next | previous | stop
+waybar-lyrics --mode splayer-next play-pause   # 临时切换模式
 ```
 
-- `splayer-next`：使用配置中的 `splayer.address` 和 `splayer.port`，按[官方 API 文档](https://github.com/SPlayer-Dev/SPlayer-Next/blob/dev/docs/api.md)调用 `POST /api/play`、`/api/pause`、`/api/next`、`/api/prev`、`/api/stop`。`play-pause` 先查询 `GET /api/status`，正在播放时暂停，否则播放。API 失败时若启用了 `mpris-fallback`，控制命令会回退给 `playerctl` 控制其他播放器。
-- `splayer` / `mpris`：程序直接执行系统中的 `playerctl`。先列出播放器，沿用歌词模式的筛选规则：`splayer` 只选择名称含 SPlayer 的播放器，`mpris` 排除 SPlayer；控制第一个匹配项，不向所有播放器广播。
-- `splayer` 模式找不到可控制的 SPlayer 时，若启用了 `mpris-fallback`，同样回退到其他播放器。
-- 控制命令执行一次后退出，不输出歌词、不清空歌词进程日志；失败时向标准错误输出原因并以非零状态退出。无命令时仍持续输出歌词。
-- 选项应放在命令之前。使用 `waybar-lyrics --help` 查看帮助。
-- 使用 `--version` 或 `-V` 打印版本号后退出，输出形如 `waybar-lyrics 1.5.3`。
+`splayer-next` 走外部 API，失败时按 `mpris-fallback` 的设置回退给 `playerctl`；`splayer` / `mpris` 直接调用系统中的 `playerctl`。命令执行一次后退出，失败时向标准错误输出原因并以非零状态退出。
 
 ## Waybar 配置
 
@@ -153,11 +95,9 @@ waybar-lyrics --mode splayer-next play-pause
 },
 ```
 
-把 `custom/lyrics` 加入 `modules-left`、`modules-center` 或 `modules-right`。左键播放/暂停，右键下一首，中键上一首。`exec-on-event: false` 避免点击后重新启动持续运行的歌词进程。若 `exec` 使用 `--mode splayer-next` 等命令行覆盖模式，点击命令也应添加相同的模式选项，例如 `waybar-lyrics --mode splayer-next play-pause`；或者直接在 YAML 中统一设置模式。
+把 `custom/lyrics` 加入 `modules-left`、`modules-center` 或 `modules-right`：左键播放/暂停，右键下一首，中键上一首。tooltip 显示「歌手 - 歌名」和歌词来源，没有播放中的曲目时模块自动隐藏。
 
-`exec` 与点击命令都直接写 `waybar-lyrics`，不要写绝对路径或 `~/.local/bin` 下的旧副本：程序安装后就在 PATH 中（`/usr/bin` 或 `/usr/local/bin`），写死路径会导致副本过期、遮蔽包管理器的更新。
-
-tooltip 显示“歌手 - 歌名”和歌词来源（`API`、`TTML`、`NCM`、`LRCLib`）。没有播放中的曲目时模块自动隐藏。
+`exec` 与点击命令都直接写 `waybar-lyrics`，不要写绝对路径或 `~/.local/bin` 下的旧副本，否则副本会遮蔽包管理器的更新。若用 `--mode` 覆盖模式，点击命令也要带上相同选项，或者直接在 YAML 中统一设置模式。
 
 ## 许可证
 
