@@ -36,6 +36,7 @@ splayer:
   port: 14558        # SPlayer-Next API 端口
   song_id_mode: auto # auto：优先使用播放器歌曲 ID；search：按歌名歌手搜索
   latency_ms: 100    # SPlayer-Next 歌词时间补偿（毫秒），含义同上
+  pause-mpris-fallback: true # SPlayer 暂停时改用 MPRIS 显示其他正在播放的媒体
 log:
   path: /tmp/waybar-lyrics.log
   level: INFO        # DEBUG、INFO、WARN 或 ERROR
@@ -62,6 +63,8 @@ llm:
 同一时刻可能有多台播放器注册 MPRIS（浏览器即使没有播放也会常驻），程序会遍历所有播放器，跳过读不到歌名的服务，并按 `PlaybackStatus` 优先选择正在播放的那台。标题里的扩展名、音轨号、站点后缀以及 `歌手 - 歌名` 格式会被清洗后再用于搜索。
 
 `splayer` / `splayer-next` 读不到歌曲时，`mpris-fallback` 会让程序改用 MPRIS 读取其他播放器（排除 SPlayer 自身）；回退得到的歌词不做 `latency_ms` 补偿，也不会等待播放器 API 歌词。
+
+`splayer.pause-mpris-fallback` 默认开启，需要 `mpris-fallback` 同时开启：SPlayer 暂停时，只要其他播放器正在播放就改为显示它的歌词；SPlayer 与其他播放器同时在播时仍优先 SPlayer，谁都没在播时保持显示 SPlayer 的曲目。
 
 ### 基于 LLM 的歌曲信息提取
 
