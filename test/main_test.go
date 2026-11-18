@@ -1005,3 +1005,19 @@ func TestGetMPRISMetadataIgnoresIdlePlayer(t *testing.T) {
 	// 本机确实有其他播放器在播放时，结果可能就是它的歌词，测试让位给真实环境。
 	t.Logf("环境中有其他播放器在播放（%s / %s），跳过断言", metadata.Player, metadata.Title)
 }
+
+// B 站网页标题固定以站点名结尾，去掉后缀后再显示与搜索。
+func TestCleanMPRISTitleStripsBilibiliSuffix(t *testing.T) {
+	cases := map[string]string{
+		"曾火遍全网的《溯》，你是否还知道？_哔哩哔哩_bilibili": "曾火遍全网的《溯》，你是否还知道？",
+		"曾火遍全网的《溯》，你是否还知道？_哔哩哔哩":          "曾火遍全网的《溯》，你是否还知道？",
+		"曾火遍全网的《溯》，你是否还知道？_bilibili":      "曾火遍全网的《溯》，你是否还知道？",
+		"曾火遍全网的《溯》，你是否还知道？ - 哔哩哔哩":        "曾火遍全网的《溯》，你是否还知道？",
+		"晴天 - YouTube Music": "晴天",
+	}
+	for input, want := range cases {
+		if got := cleanMPRISTitle(input); got != want {
+			t.Errorf("cleanMPRISTitle(%q) = %q，期望 %q", input, got, want)
+		}
+	}
+}

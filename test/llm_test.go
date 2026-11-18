@@ -197,6 +197,27 @@ func TestApplyLLMExtractionSingerNullSearchesTitleOnly(t *testing.T) {
 	}
 }
 
+func TestApplyLLMExtractionJudgesBilibiliTitleVariantsOnce(t *testing.T) {
+	server, calls := newLLMServer(t, "xesam:title 曾火遍全网的《溯》，你是否还知道？", `{"is_song":false}`, http.StatusOK)
+	configureLLMTest(t, server.URL)
+
+	// chromium 播放 B 站时，xesam:title 会在带站点后缀与不带后缀之间来回切。
+	variants := []string{
+		"曾火遍全网的《溯》，你是否还知道？",
+		"曾火遍全网的《溯》，你是否还知道？_哔哩哔哩_bilibili",
+	}
+	for _, title := range variants {
+		metadata := &PlayerMetadata{Player: "chromium.instance100036", Title: title}
+		if applyLLMWait(t, metadata, "xesam:title "+title) {
+			t.Fatalf("标题 %q 判定为非歌曲时应跳过", title)
+		}
+	}
+	llmInFlight.Wait()
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Fatalf("接口请求次数 = %d，期望 1", got)
+	}
+}
+
 func TestApplyLLMExtractionKeepsTitleOnFailure(t *testing.T) {
 	server, calls := newLLMServer(t, "xesam:title 原始标题", "", http.StatusInternalServerError)
 	configureLLMTest(t, server.URL)
@@ -291,7 +312,8 @@ func TestMPRISMetadataText(t *testing.T) {
 }
 
 func TestGetMPRISMetadataAppliesLLM(t *testing.T) {
-	server, _ := newLLMServer(t, "xesam:title 洛天依Official,姜洄 - 譬如我.flac", `{"title":"譬如我","singer":"洛天依Official, 姜洄"}`, http.StatusOK)
+	// 交给模型的 xesam:title 已经去掉文件名扩展名与站点后缀。
+	server, _ := newLLMServer(t, "xesam:title 洛天依Official,姜洄 - 譬如我", `{"title":"譬如我","singer":"洛天依Official, 姜洄"}`, http.StatusOK)
 	configureLLMTest(t, server.URL)
 
 	conn := fakeMPRIS(t, "org.mpris.MediaPlayer2.llmtest", "洛天依Official,姜洄 - 譬如我.flac", "人工歌手", "Playing")
