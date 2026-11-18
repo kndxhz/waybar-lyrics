@@ -124,6 +124,9 @@ const llmRetryBackoff = 200 * time.Millisecond
 // 请求失败按 llm.retry 重试，模型输出无法解析时不重试。
 func requestLLMExtraction(metadataText string) (llmExtraction, error) {
 	prompt := strings.ReplaceAll(appConfig.LLM.Prompt, "{metadata}", metadataText)
+	logEvent("DEBUG", "LLM 请求: 地址=%s/chat/completions 模型=%s 超时=%s 重试=%d\n%s",
+		strings.TrimRight(strings.TrimSpace(appConfig.LLM.BaseURL), "/"),
+		appConfig.LLM.ModelName, llmTimeoutLabel(), appConfig.LLM.Retry, prompt)
 	content, err := callLLMChatWithRetry(prompt)
 	if err != nil {
 		return llmExtraction{}, err
@@ -137,6 +140,14 @@ func llmTimeout() time.Duration {
 		return time.Duration(timeout) * time.Millisecond
 	}
 	return 0
+}
+
+// llmTimeoutLabel 把超时配置格式化成日志里好读的文本。
+func llmTimeoutLabel() string {
+	if timeout := llmTimeout(); timeout > 0 {
+		return timeout.String()
+	}
+	return "不超时"
 }
 
 // llmRequestContext 按 llm.timeout 创建单次请求的上下文。
@@ -166,7 +177,7 @@ func callLLMChatWithRetry(prompt string) (string, error) {
 		if attempt >= retries {
 			return "", err
 		}
-		logEvent("WARN", "LLM 接口第 %d/%d 次请求失败，%v；%s 后重试", attempt+1, retries+1, err, llmRetryBackoff)
+		logEvent("INFO", "LLM 接口第 %d/%d 次请求失败，%v；%s 后重试", attempt+1, retries+1, err, llmRetryBackoff)
 		time.Sleep(llmRetryBackoff)
 	}
 }
@@ -195,8 +206,10 @@ func callLLMChat(ctx context.Context, prompt string) (string, error) {
 		request.Header.Set("Authorization", "Bearer "+key)
 	}
 	client := &http.Client{Timeout: llmTimeout()}
+	started := time.Now()
 	response, err := client.Do(request)
 	if err != nil {
+		logEvent("DEBUG", "LLM 请求失败: 耗时=%s 错误=%v", time.Since(started).Round(time.Millisecond), err)
 		return "", fmt.Errorf("请求 LLM 接口失败：%w", err)
 	}
 	defer response.Body.Close()
@@ -204,6 +217,9 @@ func callLLMChat(ctx context.Context, prompt string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("读取 LLM 响应失败：%w", err)
 	}
+	logEvent("DEBUG", "LLM 响应: 状态=%d 耗时=%s 字节=%d\n%s",
+		response.StatusCode, time.Since(started).Round(time.Millisecond), len(body),
+		strings.TrimSpace(string(body)))
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		snippet := strings.TrimSpace(string(body))
 		if len(snippet) > 200 {
@@ -230,7 +246,7 @@ func callLLMChat(ctx context.Context, prompt string) (string, error) {
 // llmCachedExtraction 读取缓存里的提取结果。第三个返回值为 false 表示结果还没
 // 就绪：此时会在后台发起一次请求（同一首歌请求进行中不会重复发起），调用方
 // 本轮先用原始标题，等下一轮刷新再应用结果。
-func llmCachedExtraction(key, metadataText, rawTitle string) (llmExtraction, error, bool) {
+func llmCachedExtraction(key, metadataText, rawTitle, rawArtist string) (llmExtraction, error, bool) {
 	llmCache.mu.Lock()
 	if entry, ok := llmCache.entries[key]; ok {
 		if entry.pending {
@@ -266,39 +282,42 @@ func llmCachedExtraction(key, metadataText, rawTitle string) (llmExtraction, err
 		// 同一首歌只在这里记一次日志，之后命中缓存不再重复。
 		switch {
 		case err != nil:
-			logEvent("WARN", "LLM 提取歌曲信息失败，改用原始标题「%s」搜索：%v", rawTitle, err)
+			logEvent("INFO", "LLM 提取歌曲信息失败（%s 后重试），先等结果不搜索：「%s」：%v",
+				llmFailureTTL, rawTitle, err)
 		case !extraction.IsSong:
 			logEvent("INFO", "LLM 判定该媒体不是歌曲，按未识别到歌曲处理：「%s」", rawTitle)
 		default:
-			logEvent("DEBUG", "LLM 提取歌曲信息：歌名=%s 歌手=%s", extraction.Title, extraction.Singer)
+			logEvent("DEBUG", "LLM 提取歌曲信息：原始=「%s / %s」→ 歌名=%s 歌手=%s",
+				rawTitle, rawArtist, extraction.Title, extraction.Singer)
 		}
 	}()
 	return llmExtraction{}, nil, false
 }
 
 // applyLLMExtraction 用 LLM 从元数据文本里提取歌名与歌手。
-// 返回 false 表示 LLM 判定这不是歌曲，调用方应按「没识别到歌曲」处理，
-// 不再用原始标题去搜索歌词；请求失败或输出无法解析时保留原始标题继续搜索。
-// 请求在后台进行：首次调用只保留原始标题，结果就绪后的下一次调用才覆盖歌名歌手。
-func applyLLMExtraction(metadata *PlayerMetadata, metadataText string) bool {
+// 第一个返回值表示元数据还能不能用：false 表示 LLM 判定这不是歌曲，调用方应按
+// 「没识别到歌曲」处理。第二个返回值表示结果是否已经就绪：false 表示后台请求
+// 还在进行或刚失败，调用方要保持原始标题并等结果，不要拿原始标题去搜歌词。
+// 请求在后台进行：首次调用只标记等待，结果就绪后的下一次调用才覆盖歌名歌手。
+func applyLLMExtraction(metadata *PlayerMetadata, metadataText string) (bool, bool) {
 	if metadata == nil {
-		return true
+		return true, true
 	}
 	if strings.TrimSpace(metadataText) == "" {
-		return true
+		return true, true
 	}
 	key := metadata.Player + "\x00" + normalizeLLMCacheText(metadata.Title) +
 		"\x00" + normalizeLLMCacheText(metadata.Artist)
-	extraction, err, ready := llmCachedExtraction(key, metadataText, metadata.Title)
+	extraction, err, ready := llmCachedExtraction(key, metadataText, metadata.Title, metadata.Artist)
 	if !ready || err != nil {
-		return true
+		return true, false
 	}
 	if !extraction.IsSong {
-		return false
+		return false, true
 	}
 	metadata.Title = extraction.Title
 	metadata.Artist = extraction.Singer
-	return true
+	return true, true
 }
 
 // normalizeLLMCacheText 归一化歌名歌手后再做缓存键：B 站这类网页播放器会把

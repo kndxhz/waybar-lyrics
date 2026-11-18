@@ -21,7 +21,8 @@ func applyLLMWait(t *testing.T, metadata *PlayerMetadata, text string) bool {
 	t.Helper()
 	applyLLMExtraction(metadata, text)
 	llmInFlight.Wait()
-	return applyLLMExtraction(metadata, text)
+	keep, _ := applyLLMExtraction(metadata, text)
+	return keep
 }
 
 func resetLLMCache() {
@@ -249,7 +250,9 @@ func TestApplyLLMExtractionOverridesTitle(t *testing.T) {
 	}
 
 	// 同一首歌重复调用只请求一次。
-	applyLLMExtraction(rawMetadata(), text)
+	if _, ready := applyLLMExtraction(rawMetadata(), text); !ready {
+		t.Fatal("命中缓存时结果应当就绪")
+	}
 	if got := atomic.LoadInt32(calls); got != 1 {
 		t.Fatalf("LLM 请求次数 = %d, want 1", got)
 	}
@@ -303,7 +306,9 @@ func TestApplyLLMExtractionKeepsTitleOnFailure(t *testing.T) {
 	if !applyLLMWait(t, metadata, "xesam:title 原始标题") {
 		t.Fatal("接口失败时不应丢弃元数据")
 	}
-	applyLLMExtraction(metadata, "xesam:title 原始标题")
+	if keep, ready := applyLLMExtraction(metadata, "xesam:title 原始标题"); !keep || ready {
+		t.Fatalf("接口失败时应保持等待状态：keep=%t ready=%t", keep, ready)
+	}
 
 	if metadata.Title != "原始标题" || metadata.Artist != "原始歌手" {
 		t.Fatalf("失败时应保留原始标题：%+v", metadata)
@@ -332,8 +337,8 @@ func TestApplyLLMExtractionSkipsEmptyMetadata(t *testing.T) {
 	configureLLMTest(t, server.URL)
 
 	metadata := &PlayerMetadata{Player: "vlc.instance1", Title: "歌名"}
-	if !applyLLMExtraction(metadata, "   ") {
-		t.Fatal("空元数据不应丢弃元数据")
+	if keep, ready := applyLLMExtraction(metadata, "   "); !keep || !ready {
+		t.Fatalf("空元数据应立即就绪：keep=%t ready=%t", keep, ready)
 	}
 	if got := atomic.LoadInt32(calls); got != 0 {
 		t.Fatalf("空元数据不应请求 LLM，got %d", got)
@@ -436,7 +441,7 @@ func TestApplyLLMExtractionLogsOncePerTrack(t *testing.T) {
 	}
 	// 之后命中缓存，每轮刷新仍然得到同一结论，但不再重复请求与记日志。
 	for i := 0; i < 2; i++ {
-		if applyLLMExtraction(rawMetadata(), "xesam:title 语音消息") {
+		if keep, _ := applyLLMExtraction(rawMetadata(), "xesam:title 语音消息"); keep {
 			t.Fatal("非歌曲应返回 false")
 		}
 	}
@@ -557,7 +562,7 @@ func TestApplyLLMExtractionDoesNotBlock(t *testing.T) {
 
 	metadata := &PlayerMetadata{Player: "firefox.instance1", Title: "洛天依 - 譬如我.flac"}
 	started := time.Now()
-	if !applyLLMExtraction(metadata, "xesam:title 洛天依 - 譬如我.flac") {
+	if keep, _ := applyLLMExtraction(metadata, "xesam:title 洛天依 - 譬如我.flac"); !keep {
 		t.Fatal("识别为歌曲时应保留元数据")
 	}
 	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
@@ -568,7 +573,7 @@ func TestApplyLLMExtractionDoesNotBlock(t *testing.T) {
 	}
 
 	llmInFlight.Wait()
-	if !applyLLMExtraction(metadata, "xesam:title 洛天依 - 譬如我.flac") {
+	if keep, _ := applyLLMExtraction(metadata, "xesam:title 洛天依 - 譬如我.flac"); !keep {
 		t.Fatal("识别为歌曲时应保留元数据")
 	}
 	if metadata.Title != "譬如我" || metadata.Artist != "洛天依" {

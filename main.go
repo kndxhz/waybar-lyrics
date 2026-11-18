@@ -115,6 +115,9 @@ type PlayerMetadata struct {
 	RawTitle  string
 	RawArtist string
 	llmFilled bool
+	// llmPending 表示 LLM 结果还没就绪：此时先只显示「歌手 - 歌名」，
+	// 等歌名歌手提取出来再去搜歌词，避免拿网页标题搜到别的歌。
+	llmPending bool
 }
 
 func main() {
@@ -170,6 +173,7 @@ func main() {
 	var idRetry nextIDRetry
 	lastRendered := ""
 	var currentLyrics *ParsedLyrics
+	resolver := newLyricResolver()
 	lastResolve := time.Time{}
 	songStartedAt := time.Now()
 	apiLyricsRefreshed := false
@@ -180,7 +184,7 @@ func main() {
 		metadata := getPlayerMetadata()
 		if metadata == nil {
 			if !playerUnavailable {
-				logEvent("WARN", "播放器不可用或没有播放中的曲目")
+				logEvent("INFO", "播放器不可用或没有播放中的曲目")
 				playerUnavailable = true
 			}
 			empty := renderWaybar(WaybarOutput{Text: "", Tooltip: "", Class: "stopped"})
@@ -192,6 +196,7 @@ func main() {
 			lastIdentityKey = ""
 			lastTrackID = ""
 			idRetry = nextIDRetry{}
+			resolver.reset()
 			<-ticker.C
 			continue
 		}
@@ -218,6 +223,8 @@ func main() {
 			lyricsFailureLogged = false
 			idRetry = nextIDRetry{}
 			lastTrackID = ""
+			// 切歌后旧曲目的解析任务作废，它的结果到达时会被丢弃。
+			resolver.reset()
 		case trackRefilled:
 			// 同一首歌，只是 LLM 后台补全了标题歌手：换掉搜索词，但不记切歌。
 			logEvent("DEBUG", "LLM 补全曲目信息: 歌名=%s 歌手=%s", metadata.Title, metadata.Artist)
@@ -237,32 +244,39 @@ func main() {
 			lastTrackID = trackID
 		}
 
+		currentIdentity := buildIdentityKey(metadata)
+		resolver.drain(currentIdentity, func(outcome lyricOutcome) {
+			currentLyrics = outcome.lyrics
+			logLyricsResult(outcome.reason, currentLyrics, &lyricsFailureLogged)
+			lastResolve = time.Now()
+			if outcome.reason == resolveReasonRefreshAPI {
+				apiLyricsRefreshed = true
+			} else {
+				apiLyricsRefreshed = apiLyricsUpdateDue(currentLyrics, time.Since(songStartedAt))
+			}
+		})
+
 		if currentLyrics == nil {
 			waitingForID := idRetry.shouldWait(metadata, time.Now())
-			if hasPlayerLyrics(metadata) || (!waitingForID && !shouldWaitForPlayerLyrics(metadata, time.Since(songStartedAt))) {
-				if lastResolve.IsZero() || lyricsNeedRefresh(currentLyrics, metadata, time.Since(lastResolve)) {
-					// 播放器大多在切歌后才异步去取歌词，首次解析可能落空。
-					// 这里在歌词为空时持续重试，避免整首歌都卡在“歌手 - 歌名”。
-					currentLyrics = resolveLyrics(metadata)
-					logLyricsResult("解析歌词", currentLyrics, &lyricsFailureLogged)
+			if shouldRequestLyrics(metadata, currentLyrics, waitingForID, time.Since(songStartedAt), lastResolve) {
+				// 播放器大多在切歌后才异步去取歌词，首次解析可能落空。
+				// 这里在歌词为空时持续重试，避免整首歌都卡在“歌手 - 歌名”。
+				if resolver.request(currentIdentity, metadata, resolveReasonInitial) {
 					lastResolve = time.Now()
-					apiLyricsRefreshed = apiLyricsUpdateDue(currentLyrics, time.Since(songStartedAt))
 				}
 			}
 		} else if shouldRefreshAPILyrics(currentLyrics, metadata, time.Since(songStartedAt), apiLyricsRefreshed) {
 			// SPlayer-Next 可能在切歌后继续请求质量更高、优先级更高的歌词，
 			// 5 秒后再读取一次，避免翻译等字段与播放器显示的不一致。
-			currentLyrics = resolveLyrics(metadata)
-			logLyricsResult("刷新 API 歌词", currentLyrics, &lyricsFailureLogged)
-			lastResolve = time.Now()
-			apiLyricsRefreshed = true
+			if resolver.request(currentIdentity, metadata, resolveReasonRefreshAPI) {
+				lastResolve = time.Now()
+			}
 		} else if shouldUpgradeLyrics(currentLyrics, metadata) {
 			// 先用了外部歌词源，之后播放器才拿到自己的歌词。切回播放器歌词，
 			// 避免同一首歌的歌词与 SPlayer 显示的不一致。
-			currentLyrics = resolveLyrics(metadata)
-			logLyricsResult("切换至播放器歌词", currentLyrics, &lyricsFailureLogged)
-			lastResolve = time.Now()
-			apiLyricsRefreshed = apiLyricsUpdateDue(currentLyrics, time.Since(songStartedAt))
+			if resolver.request(currentIdentity, metadata, resolveReasonUpgradePlayer) {
+				lastResolve = time.Now()
+			}
 		}
 
 		text := buildCurrentLyricText(metadata, currentLyrics)
@@ -406,6 +420,22 @@ func apiLyricsUpdateDue(current *ParsedLyrics, songElapsed time.Duration) bool {
 }
 
 // shouldRefreshAPILyrics 判断是否需要在切歌 5 秒后重新读取播放器 API 歌词。
+// shouldRequestLyrics 判断这一轮要不要发起歌词解析。
+// LLM 结果还没就绪时先不搜：等歌名歌手从网页标题里提取出来再搜，免得拿原始
+// 标题搜到别的歌的歌词；这段时间界面只显示「歌手 - 歌名」。
+func shouldRequestLyrics(metadata *PlayerMetadata, current *ParsedLyrics, waitingForID bool, songElapsed time.Duration, lastResolve time.Time) bool {
+	if metadata == nil || metadata.llmPending {
+		return false
+	}
+	if current != nil {
+		return false
+	}
+	if !hasPlayerLyrics(metadata) && (waitingForID || shouldWaitForPlayerLyrics(metadata, songElapsed)) {
+		return false
+	}
+	return lastResolve.IsZero() || lyricsNeedRefresh(current, metadata, time.Since(lastResolve))
+}
+
 func shouldRefreshAPILyrics(current *ParsedLyrics, metadata *PlayerMetadata, songElapsed time.Duration, refreshed bool) bool {
 	return !refreshed && apiLyricsUpdateDue(current, songElapsed) && hasPlayerLyrics(metadata)
 }
@@ -432,6 +462,99 @@ func lyricsNeedRefresh(current *ParsedLyrics, metadata *PlayerMetadata, sinceLas
 		return true
 	}
 	return sinceLast >= lyricRetryInterval
+}
+
+// 歌词解析动作名，既用于日志也用于区分结果该怎么处理。
+const (
+	resolveReasonInitial       = "解析歌词"
+	resolveReasonRefreshAPI    = "刷新 API 歌词"
+	resolveReasonUpgradePlayer = "切换至播放器歌词"
+)
+
+// resolveLyricsHook 让测试替换歌词解析的实现，正常运行时就是 resolveLyrics。
+var resolveLyricsHook = resolveLyrics
+
+// lyricTask 是一次后台歌词解析请求。
+type lyricTask struct {
+	identityKey string
+	reason      string
+	metadata    PlayerMetadata
+}
+
+// lyricOutcome 是后台解析完成的结果。
+type lyricOutcome struct {
+	identityKey string
+	reason      string
+	title       string
+	lyrics      *ParsedLyrics
+}
+
+// lyricResolver 把歌词解析放到后台执行：网易云、TTML 这些接口慢的时候不再阻塞
+// 250ms 的轮询循环，切歌能被立刻检测到；结果按曲目标识匹配，切歌后才到达的旧
+// 结果直接丢弃，避免把上一首的歌词拼到新曲目上。
+type lyricResolver struct {
+	tasks    chan lyricTask
+	outcomes chan lyricOutcome
+	pending  string
+}
+
+func newLyricResolver() *lyricResolver {
+	resolver := &lyricResolver{
+		tasks:    make(chan lyricTask, 1),
+		outcomes: make(chan lyricOutcome, 4),
+	}
+	go resolver.run()
+	return resolver
+}
+
+func (r *lyricResolver) run() {
+	for task := range r.tasks {
+		r.outcomes <- lyricOutcome{
+			identityKey: task.identityKey,
+			reason:      task.reason,
+			title:       task.metadata.Title,
+			lyrics:      resolveLyricsHook(&task.metadata),
+		}
+	}
+}
+
+// request 投递一次解析任务；同一曲目已有任务在跑时不重复投递。
+func (r *lyricResolver) request(identityKey string, metadata *PlayerMetadata, reason string) bool {
+	if identityKey == "" || metadata == nil || r.pending == identityKey {
+		return false
+	}
+	select {
+	case r.tasks <- lyricTask{identityKey: identityKey, reason: reason, metadata: *metadata}:
+		r.pending = identityKey
+		return true
+	default:
+		// 后台还在处理上一首，等它结束下一轮再投递。
+		return false
+	}
+}
+
+// reset 在切歌或播放器不可用时调用，让新一轮可以立刻投递任务。
+func (r *lyricResolver) reset() {
+	r.pending = ""
+}
+
+// drain 取出已经完成的结果，只把当前曲目的结果交给 apply，其余按过期丢弃。
+func (r *lyricResolver) drain(identityKey string, apply func(lyricOutcome)) {
+	for {
+		select {
+		case outcome := <-r.outcomes:
+			if r.pending == outcome.identityKey {
+				r.pending = ""
+			}
+			if outcome.identityKey != identityKey {
+				logEvent("DEBUG", "丢弃过期歌词结果: 曲目=%s", outcome.title)
+				continue
+			}
+			apply(outcome)
+		default:
+			return
+		}
+	}
 }
 
 func resolveLyrics(metadata *PlayerMetadata) *ParsedLyrics {
@@ -1117,8 +1240,13 @@ func applyLLMToMetadata(metadata *PlayerMetadata, metadataText string) bool {
 		return true
 	}
 	rawTitle, rawArtist := metadata.Title, metadata.Artist
-	if !applyLLMExtraction(metadata, metadataText) {
+	keep, ready := applyLLMExtraction(metadata, metadataText)
+	if !keep {
 		return false
+	}
+	if !ready {
+		metadata.llmPending = true
+		return true
 	}
 	// LLM 结果是后台补上的，记住补全前的标题歌手，避免把补全当成切歌。
 	if metadata.Title != rawTitle || metadata.Artist != rawArtist {
