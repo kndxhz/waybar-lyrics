@@ -9,9 +9,19 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/godbus/dbus/v5"
 )
+
+// applyLLMWait 触发一次提取并等待后台请求结束，返回后台结果的判定：
+// false 表示 LLM 判定不是歌曲。
+func applyLLMWait(t *testing.T, metadata *PlayerMetadata, text string) bool {
+	t.Helper()
+	applyLLMExtraction(metadata, text)
+	llmInFlight.Wait()
+	return applyLLMExtraction(metadata, text)
+}
 
 func resetLLMCache() {
 	llmCache.mu.Lock()
@@ -28,7 +38,11 @@ func configureLLMTest(t *testing.T, baseURL string) {
 	appConfig.LLM.BaseURL = baseURL
 	appConfig.LLM.APIKey = "test-key"
 	resetLLMCache()
-	t.Cleanup(resetLLMCache)
+	// 先等后台请求结束，再恢复配置，避免用例提前返回时请求跑到别的用例里。
+	t.Cleanup(func() {
+		llmInFlight.Wait()
+		resetLLMCache()
+	})
 }
 
 func TestCleanLLMOutput(t *testing.T) {
@@ -149,7 +163,7 @@ func TestApplyLLMExtractionOverridesTitle(t *testing.T) {
 	text := "xesam:title 洛天依Official,姜洄 - 譬如我.flac\nmpris:length 153000000"
 
 	metadata := rawMetadata()
-	if !applyLLMExtraction(metadata, text) {
+	if !applyLLMWait(t, metadata, text) {
 		t.Fatal("识别为歌曲时应保留元数据")
 	}
 	if metadata.Title != "譬如我" || metadata.Artist != "洛天依Official, 姜洄" {
@@ -171,7 +185,7 @@ func TestApplyLLMExtractionSingerNullSearchesTitleOnly(t *testing.T) {
 	configureLLMTest(t, server.URL)
 
 	metadata := &PlayerMetadata{Player: "vlc.instance1", Title: "洛天依Official,姜洄 - 譬如我.flac", Artist: "洛天依Official, 姜洄"}
-	if !applyLLMExtraction(metadata, "xesam:title 洛天依Official,姜洄 - 譬如我.flac") {
+	if !applyLLMWait(t, metadata, "xesam:title 洛天依Official,姜洄 - 譬如我.flac") {
 		t.Fatal("识别为歌曲时应保留元数据")
 	}
 
@@ -190,7 +204,7 @@ func TestApplyLLMExtractionKeepsTitleOnFailure(t *testing.T) {
 	appConfig.LLM.Retry = 0
 
 	metadata := &PlayerMetadata{Player: "firefox.instance1", Title: "原始标题", Artist: "原始歌手"}
-	if !applyLLMExtraction(metadata, "xesam:title 原始标题") {
+	if !applyLLMWait(t, metadata, "xesam:title 原始标题") {
 		t.Fatal("接口失败时不应丢弃元数据")
 	}
 	applyLLMExtraction(metadata, "xesam:title 原始标题")
@@ -209,7 +223,7 @@ func TestApplyLLMExtractionRejectsNonSong(t *testing.T) {
 	configureLLMTest(t, server.URL)
 
 	metadata := &PlayerMetadata{Player: "telegram.instance1", Title: "语音消息", Artist: "张三"}
-	if applyLLMExtraction(metadata, "xesam:title 语音消息") {
+	if applyLLMWait(t, metadata, "xesam:title 语音消息") {
 		t.Fatal("非歌曲应返回 false，按没识别到歌曲处理")
 	}
 	if metadata.Title != "语音消息" || metadata.Artist != "张三" {
@@ -290,6 +304,19 @@ func TestGetMPRISMetadataAppliesLLM(t *testing.T) {
 	if status != "Playing" {
 		t.Fatalf("status = %q", status)
 	}
+	// 首次读取时后台请求还没返回，只保留规范化后的原始标题（去掉扩展名）。
+	if metadata.Title != "洛天依Official,姜洄 - 譬如我" {
+		t.Fatalf("首次读取应先保留原始标题：%+v", metadata)
+	}
+	llmInFlight.Wait()
+
+	metadata, status, ok = readMPRISPlayer(conn, "org.mpris.MediaPlayer2.llmtest", "llmtest")
+	if !ok || metadata == nil {
+		t.Fatalf("第二次读取应读到元数据，ok=%t", ok)
+	}
+	if status != "Playing" {
+		t.Fatalf("status = %q", status)
+	}
 	if metadata.Title != "譬如我" || metadata.Artist != "洛天依Official, 姜洄" {
 		t.Fatalf("LLM 结果未覆盖元数据：%+v", metadata)
 	}
@@ -307,7 +334,11 @@ func TestApplyLLMExtractionLogsOncePerTrack(t *testing.T) {
 	rawMetadata := func() *PlayerMetadata {
 		return &PlayerMetadata{Player: "telegram.instance1", Title: "语音消息"}
 	}
-	for i := 0; i < 3; i++ {
+	if applyLLMWait(t, rawMetadata(), "xesam:title 语音消息") {
+		t.Fatal("非歌曲应返回 false")
+	}
+	// 之后命中缓存，每轮刷新仍然得到同一结论，但不再重复请求与记日志。
+	for i := 0; i < 2; i++ {
 		if applyLLMExtraction(rawMetadata(), "xesam:title 语音消息") {
 			t.Fatal("非歌曲应返回 false")
 		}
@@ -318,10 +349,15 @@ func TestApplyLLMExtractionLogsOncePerTrack(t *testing.T) {
 }
 
 func TestReadMPRISPlayerSkipsNonSong(t *testing.T) {
-	server, _ := newLLMServer(t, "xesam:title 语音消息", `{"is_song":false}`, http.StatusOK)
+	server, _ := newLLMServer(t, "xesam:title 例会录音", `{"is_song":false}`, http.StatusOK)
 	configureLLMTest(t, server.URL)
 
-	conn := fakeMPRIS(t, "org.mpris.MediaPlayer2.llmnonsong", "语音消息", "张三", "Playing")
+	// 标题不能用占位词（例如“语音消息”），否则读元数据阶段就会当作没有歌名。
+	conn := fakeMPRIS(t, "org.mpris.MediaPlayer2.llmnonsong", "例会录音", "张三", "Playing")
+	if _, _, ok := readMPRISPlayer(conn, "org.mpris.MediaPlayer2.llmnonsong", "llmnonsong"); !ok {
+		t.Fatal("首次读取时后台请求未返回，应先保留元数据")
+	}
+	llmInFlight.Wait()
 	if _, _, ok := readMPRISPlayer(conn, "org.mpris.MediaPlayer2.llmnonsong", "llmnonsong"); ok {
 		t.Fatal("LLM 判定非歌曲时应按没识别到歌曲处理")
 	}
@@ -415,4 +451,66 @@ func TestLLMRetryNegativeTreatedAsZero(t *testing.T) {
 	if got := atomic.LoadInt32(calls); got != 1 {
 		t.Fatalf("负数应视为不重试，got %d 次请求", got)
 	}
+}
+
+// 慢接口不能让歌词刷新卡住：首轮立刻返回原始标题，结果就绪后下一次调用再生效。
+func TestApplyLLMExtractionDoesNotBlock(t *testing.T) {
+	server, _ := newSlowLLMServer(t, 400*time.Millisecond, `{"title":"譬如我","singer":"洛天依"}`)
+	configureLLMTest(t, server.URL)
+
+	metadata := &PlayerMetadata{Player: "firefox.instance1", Title: "洛天依 - 譬如我.flac"}
+	started := time.Now()
+	if !applyLLMExtraction(metadata, "xesam:title 洛天依 - 譬如我.flac") {
+		t.Fatal("识别为歌曲时应保留元数据")
+	}
+	if elapsed := time.Since(started); elapsed > 150*time.Millisecond {
+		t.Fatalf("首轮不应等待接口，耗时 %s", elapsed)
+	}
+	if metadata.Title != "洛天依 - 譬如我.flac" {
+		t.Fatalf("首轮应保留原始标题：%+v", metadata)
+	}
+
+	llmInFlight.Wait()
+	if !applyLLMExtraction(metadata, "xesam:title 洛天依 - 譬如我.flac") {
+		t.Fatal("识别为歌曲时应保留元数据")
+	}
+	if metadata.Title != "譬如我" || metadata.Artist != "洛天依" {
+		t.Fatalf("结果就绪后应覆盖标题歌手：%+v", metadata)
+	}
+}
+
+// 后台请求同样要按 llm.retry 重试。
+func TestApplyLLMExtractionRetriesInBackground(t *testing.T) {
+	server, calls := newFlakyLLMServer(t, 1, `{"title":"譬如我","singer":"洛天依"}`)
+	configureLLMTest(t, server.URL)
+	appConfig.LLM.Retry = 3
+
+	metadata := &PlayerMetadata{Player: "vlc.instance1", Title: "洛天依 - 譬如我.flac"}
+	if !applyLLMWait(t, metadata, "xesam:title 洛天依 - 譬如我.flac") {
+		t.Fatal("识别为歌曲时应保留元数据")
+	}
+	if metadata.Title != "譬如我" || metadata.Artist != "洛天依" {
+		t.Fatalf("重试成功后应覆盖标题歌手：%+v", metadata)
+	}
+	if got := atomic.LoadInt32(calls); got != 2 {
+		t.Fatalf("LLM 请求次数 = %d, want 2", got)
+	}
+}
+
+// newSlowLLMServer 每次响应前等待 delay，模拟推理类模型。
+func newSlowLLMServer(t *testing.T, delay time.Duration, content string) (*httptest.Server, *int32) {
+	t.Helper()
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(delay)
+		response, _ := json.Marshal(map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"content": content},
+			}},
+		})
+		_, _ = w.Write(response)
+	}))
+	t.Cleanup(server.Close)
+	return server, &calls
 }
