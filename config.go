@@ -114,7 +114,7 @@ const defaultLyricLatencyMS = 300
 
 // defaultMPRISLatencyMS 是 MPRIS 来源歌词的默认提前量，用于抵消轮询读取
 // 播放进度带来的滞后。
-const defaultMPRISLatencyMS = 500
+const defaultMPRISLatencyMS = 300
 
 var appConfig = defaultConfig()
 
