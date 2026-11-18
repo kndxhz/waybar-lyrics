@@ -59,12 +59,17 @@ type LLMConfig struct {
 	ModelName string `yaml:"model_name"`
 	APIKey    string `yaml:"api_key"`
 	// Retry 是接口请求失败后的重试次数，0 表示失败即放弃。
-	Retry  int    `yaml:"retry"`
-	Prompt string `yaml:"prompt"`
+	Retry int `yaml:"retry"`
+	// Timeout 是接口单次请求的超时时间，单位毫秒，0 或负数表示一直等待。
+	Timeout int    `yaml:"timeout"`
+	Prompt  string `yaml:"prompt"`
 }
 
 // defaultLLMRetry 是 LLM 接口请求失败后的默认重试次数。
 const defaultLLMRetry = 3
+
+// defaultLLMTimeoutMS 是 LLM 接口单次请求的默认超时时间（毫秒）。
+const defaultLLMTimeoutMS = 60000
 
 // defaultLLMPrompt 是默认提取指令，{metadata} 会被替换为 MPRIS 元数据文本。
 const defaultLLMPrompt = `根据元数据判断是否为歌曲并提取信息。
@@ -96,6 +101,7 @@ func (c LLMConfig) MarshalYAML() (any, error) {
 	content = append(content, pair("model_name", "!!str", c.ModelName)...)
 	content = append(content, pair("api_key", "!!str", c.APIKey)...)
 	content = append(content, pair("retry", "!!int", strconv.Itoa(c.Retry))...)
+	content = append(content, pair("timeout", "!!int", strconv.Itoa(c.Timeout))...)
 	content = append(content,
 		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "prompt"},
 		prompt,
@@ -131,6 +137,7 @@ func defaultConfig() AppConfig {
 			ModelName: "deepseek-flash",
 			APIKey:    "xxx",
 			Retry:     defaultLLMRetry,
+			Timeout:   defaultLLMTimeoutMS,
 			Prompt:    defaultLLMPrompt,
 		},
 	}

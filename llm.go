@@ -19,9 +19,6 @@ import (
 )
 
 const (
-	// llmRequestTimeout 限制单次请求耗时。推理类模型的响应常在十秒以上，
-	// 因此放宽到 30s；请求在后台执行，不会卡住歌词刷新循环。
-	llmRequestTimeout = 30 * time.Second
 	// llmFailureTTL 让失败的提取在短时间内不再重试，避免每轮循环都打一遍接口。
 	llmFailureTTL = 60 * time.Second
 	// llmMaxCacheEntries 限制缓存条目数，键随歌曲变化，超出后整体清空。
@@ -134,6 +131,22 @@ func requestLLMExtraction(metadataText string) (llmExtraction, error) {
 	return parseLLMExtraction(content)
 }
 
+// llmTimeout 返回单次请求的超时时间，llm.timeout 为 0 或负数时表示一直等待。
+func llmTimeout() time.Duration {
+	if timeout := appConfig.LLM.Timeout; timeout > 0 {
+		return time.Duration(timeout) * time.Millisecond
+	}
+	return 0
+}
+
+// llmRequestContext 按 llm.timeout 创建单次请求的上下文。
+func llmRequestContext() (context.Context, context.CancelFunc) {
+	if timeout := llmTimeout(); timeout > 0 {
+		return context.WithTimeout(context.Background(), timeout)
+	}
+	return context.WithCancel(context.Background())
+}
+
 // callLLMChatWithRetry 在请求失败时最多重试 llm.retry 次：0 表示只请求一次。
 func callLLMChatWithRetry(prompt string) (string, error) {
 	retries := appConfig.LLM.Retry
@@ -141,7 +154,7 @@ func callLLMChatWithRetry(prompt string) (string, error) {
 		retries = 0
 	}
 	for attempt := 0; ; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), llmRequestTimeout)
+		ctx, cancel := llmRequestContext()
 		content, err := callLLMChat(ctx, prompt)
 		cancel()
 		if err == nil {
@@ -181,7 +194,7 @@ func callLLMChat(ctx context.Context, prompt string) (string, error) {
 	if key := strings.TrimSpace(appConfig.LLM.APIKey); key != "" {
 		request.Header.Set("Authorization", "Bearer "+key)
 	}
-	client := &http.Client{Timeout: llmRequestTimeout}
+	client := &http.Client{Timeout: llmTimeout()}
 	response, err := client.Do(request)
 	if err != nil {
 		return "", fmt.Errorf("请求 LLM 接口失败：%w", err)

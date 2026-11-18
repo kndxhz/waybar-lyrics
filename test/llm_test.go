@@ -661,3 +661,50 @@ func TestGetMPRISMetadataOnlyAsksLLMForChosenPlayer(t *testing.T) {
 		}
 	}
 }
+
+func TestLLMTimeoutUsesConfiguredValue(t *testing.T) {
+	configureLLMTest(t, "http://127.0.0.1:1")
+	if got := llmTimeout(); got != 60*time.Second {
+		t.Fatalf("默认超时应为 60s，got %s", got)
+	}
+	appConfig.LLM.Timeout = 15000
+	if got := llmTimeout(); got != 15*time.Second {
+		t.Fatalf("timeout: 15000 应为 15s，got %s", got)
+	}
+	appConfig.LLM.Timeout = 0
+	if got := llmTimeout(); got != 0 {
+		t.Fatalf("timeout: 0 表示不超时，got %s", got)
+	}
+	appConfig.LLM.Timeout = -1
+	if got := llmTimeout(); got != 0 {
+		t.Fatalf("负数应表示不超时，got %s", got)
+	}
+}
+
+func TestApplyLLMExtractionTimesOutWhenConfigured(t *testing.T) {
+	server, calls := newSlowLLMServer(t, 300*time.Millisecond, `{"title":"爱言叶V","singer":"初音未来"}`)
+	configureLLMTest(t, server.URL)
+	appConfig.LLM.Retry = 0
+	appConfig.LLM.Timeout = 100
+
+	metadata := &PlayerMetadata{Player: "chromium.instance1", Title: "原始标题", Artist: "原始歌手"}
+	applyLLMWait(t, metadata, "xesam:title 原始标题")
+	if metadata.Title != "原始标题" || metadata.Artist != "原始歌手" {
+		t.Fatalf("超时后应保留原始标题：%+v", metadata)
+	}
+	if got := atomic.LoadInt32(calls); got != 1 {
+		t.Fatalf("超时不应重试，请求次数 = %d, want 1", got)
+	}
+}
+
+func TestApplyLLMExtractionWithoutTimeout(t *testing.T) {
+	server, _ := newSlowLLMServer(t, 300*time.Millisecond, `{"title":"爱言叶V","singer":"初音未来"}`)
+	configureLLMTest(t, server.URL)
+	appConfig.LLM.Timeout = 0
+
+	metadata := &PlayerMetadata{Player: "chromium.instance1", Title: "原始标题", Artist: "原始歌手"}
+	applyLLMWait(t, metadata, "xesam:title 原始标题")
+	if metadata.Title != "爱言叶V" || metadata.Artist != "初音未来" {
+		t.Fatalf("不超时时应拿到提取结果：%+v", metadata)
+	}
+}

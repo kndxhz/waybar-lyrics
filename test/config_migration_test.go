@@ -427,3 +427,57 @@ func TestConfigPauseMPRISFallbackKeepsExplicitFalse(t *testing.T) {
 		t.Fatalf("显式关闭应保留：%+v", config.SPlayer)
 	}
 }
+
+func TestConfigLLMTimeoutDefaultsToSixtySeconds(t *testing.T) {
+	path := migrationFile(t, "mode: mpris\nllm:\n  enable: true\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.LLM.Timeout != 60000 {
+		t.Fatalf("llm.timeout 默认值应为 60000，got %d", config.LLM.Timeout)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "timeout: 60000") {
+		t.Fatalf("升级后的配置应补写 timeout: 60000：\n%s", data)
+	}
+}
+
+func TestConfigLLMTimeoutKeepsExplicitValue(t *testing.T) {
+	path := migrationFile(t, "mode: mpris\nllm:\n  enable: true\n  timeout: 15000\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.LLM.Timeout != 15000 {
+		t.Fatalf("显式 timeout: 15000 应保留，got %d", config.LLM.Timeout)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "timeout: 15000") {
+		t.Fatalf("显式 timeout 不应被默认值覆盖：\n%s", data)
+	}
+}
+
+func TestConfigLLMTimeoutZeroKept(t *testing.T) {
+	path := migrationFile(t, "mode: mpris\nllm:\n  enable: true\n  timeout: 0\n")
+	config, err := loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.LLM.Timeout != 0 {
+		t.Fatalf("显式 timeout: 0 表示不超时，应保留，got %d", config.LLM.Timeout)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "timeout: 0") {
+		t.Fatalf("显式 timeout: 0 不应被默认值覆盖：\n%s", data)
+	}
+}
