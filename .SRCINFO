@@ -1,15 +1,21 @@
-pkgbase = waybar-lyrics
-	pkgdesc = Waybar synchronized lyrics from MPRIS, SPlayer, and SPlayer-Next
+pkgbase = waybar-lyrics-bin
+	pkgdesc = Waybar synchronized lyrics from MPRIS, SPlayer, and SPlayer-Next (prebuilt binary)
 	pkgver = 1.5.13
 	pkgrel = 1
 	url = https://github.com/kndxhz/waybar-lyrics
 	arch = x86_64
+	arch = aarch64
 	license = GPL3
-	makedepends = go
 	depends = glibc
 	optdepends = playerctl: For media control support
+	provides = waybar-lyrics
+	conflicts = waybar-lyrics
 	conflicts = waybar-lyrics-git
-	source = waybar-lyrics-1.5.13.tar.gz::https://github.com/kndxhz/waybar-lyrics/archive/v1.5.13.tar.gz
-	sha256sums = 7fef7bfe91c58e361b9994636a63107e1ec95aa47b619130c01f788dd7cb515f
+	options = !strip
+	options = !debug
+	source_x86_64 = waybar-lyrics-bin-1.5.13-amd64::https://github.com/kndxhz/waybar-lyrics/releases/download/v1.5.13/waybar-lyrics-linux-amd64
+	sha256sums_x86_64 = c0d2e5536cbd1dc2dd9937229ac1219ccd7d1dc4efff6d6f008b410a3bd852f4
+	source_aarch64 = waybar-lyrics-bin-1.5.13-arm64::https://github.com/kndxhz/waybar-lyrics/releases/download/v1.5.13/waybar-lyrics-linux-arm64
+	sha256sums_aarch64 = 1d5d30241157628c0df027cab27974559697436d4fa6248df408d86d8a3427c7
 
-pkgname = waybar-lyrics
+pkgname = waybar-lyrics-bin
