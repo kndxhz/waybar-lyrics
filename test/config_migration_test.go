@@ -316,20 +316,20 @@ func TestConfigLLMPreservesExplicitValues(t *testing.T) {
 	}
 }
 
-func TestConfigMPRISMSDefaultsTo500(t *testing.T) {
+func TestConfigMPRISMSDefaultsTo300(t *testing.T) {
 	path := migrationFile(t, "mode: mpris\n")
 	config, err := loadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.MPRISMS != 500 {
-		t.Fatalf("mpris-ms 默认值应为 500，got %d", config.MPRISMS)
+	if config.MPRISMS != 300 {
+		t.Fatalf("mpris-ms 默认值应为 300，got %d", config.MPRISMS)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "mpris-ms: 500") {
+	if !strings.Contains(string(data), "mpris-ms: 300") {
 		t.Fatalf("升级后的配置应补写 mpris-ms：\n%s", data)
 	}
 }

@@ -274,14 +274,14 @@ func TestBuildCurrentLyricTextLatencyCompensation(t *testing.T) {
 		t.Fatalf("补偿取值不符：api=%d mpris=%d", lyricLatencyMS(apiMetadata), lyricLatencyMS(mprisMetadata))
 	}
 
-	// 默认值 500ms。
+	// 默认值 300ms。
 	appConfig = defaultConfig()
-	if appConfig.MPRISMS != 500 {
-		t.Fatalf("mpris-ms 默认值应为 500，got %d", appConfig.MPRISMS)
+	if appConfig.MPRISMS != 300 {
+		t.Fatalf("mpris-ms 默认值应为 300，got %d", appConfig.MPRISMS)
 	}
-	mprisMetadata.Position = 500 * 1000
+	mprisMetadata.Position = 700 * 1000
 	if got := buildCurrentLyricText(mprisMetadata, lyrics); got != "b" {
-		t.Errorf("默认 mpris-ms=500 应提前 500ms，got %q", got)
+		t.Errorf("默认 mpris-ms=300 应提前 300ms，got %q", got)
 	}
 
 	// 负数表示延后：1100ms 时原本已到第二行，延后 200ms 后应仍显示第一行。
