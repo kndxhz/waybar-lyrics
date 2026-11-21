@@ -1,6 +1,6 @@
 # Maintainer: kndxhz <kndxhz@163.com>
 pkgname=waybar-lyrics-bin
-pkgver=1.5.13
+pkgver=1.6.0
 pkgrel=1
 pkgdesc="Waybar synchronized lyrics from MPRIS, SPlayer, and SPlayer-Next (prebuilt binary)"
 arch=('x86_64' 'aarch64')
@@ -14,8 +14,8 @@ options=('!strip' '!debug')
 
 source_x86_64=("${pkgname}-${pkgver}-amd64::${url}/releases/download/v${pkgver}/waybar-lyrics-linux-amd64")
 source_aarch64=("${pkgname}-${pkgver}-arm64::${url}/releases/download/v${pkgver}/waybar-lyrics-linux-arm64")
-sha256sums_x86_64=('c0d2e5536cbd1dc2dd9937229ac1219ccd7d1dc4efff6d6f008b410a3bd852f4')
-sha256sums_aarch64=('1d5d30241157628c0df027cab27974559697436d4fa6248df408d86d8a3427c7')
+sha256sums_x86_64=('8454a1e1da0c2a5fcf4d9b443aa0ab5e7253c3eb4aa80cec7dfd05e861c46b63')
+sha256sums_aarch64=('8f3cd05a8b11651126c0650e5215b2929f4828f4175e67efdbddd54a228bf37a')
 
 package() {
   local _arch_suffix
