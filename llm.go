@@ -170,14 +170,14 @@ func callLLMChatWithRetry(prompt string) (string, error) {
 		cancel()
 		if err == nil {
 			if attempt > 0 {
-				logEvent("INFO", "LLM 接口第 %d 次重试成功", attempt)
+				logEvent("WARN", "LLM 接口第 %d 次重试成功", attempt)
 			}
 			return content, nil
 		}
 		if attempt >= retries {
 			return "", err
 		}
-		logEvent("INFO", "LLM 接口第 %d/%d 次请求失败，%v；%s 后重试", attempt+1, retries+1, err, llmRetryBackoff)
+		logEvent("WARN", "LLM 接口第 %d/%d 次请求失败，%v；%s 后重试", attempt+1, retries+1, err, llmRetryBackoff)
 		time.Sleep(llmRetryBackoff)
 	}
 }
@@ -282,7 +282,7 @@ func llmCachedExtraction(key, metadataText, rawTitle, rawArtist string) (llmExtr
 		// 同一首歌只在这里记一次日志，之后命中缓存不再重复。
 		switch {
 		case err != nil:
-			logEvent("INFO", "LLM 提取歌曲信息失败（%s 后重试），先等结果不搜索：「%s」：%v",
+			logEvent("WARN", "LLM 提取歌曲信息失败（%s 后重试），先等结果不搜索：「%s」：%v",
 				llmFailureTTL, rawTitle, err)
 		case !extraction.IsSong:
 			logEvent("INFO", "LLM 判定该媒体不是歌曲，按未识别到歌曲处理：「%s」", rawTitle)

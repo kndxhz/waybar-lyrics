@@ -163,6 +163,10 @@ func main() {
 	if appConfig.Mode == "mpris" && appConfig.MPRISFallback {
 		logEvent("WARN", "mpris 模式本身即 MPRIS，mpris-fallback 配置无效，已忽略")
 	}
+	// 开关开了却缺少必要项时 LLM 提取根本不会执行，属于没人兜底的配置错误。
+	if appConfig.LLM.Enable && !llmEnabled(appConfig) {
+		logEvent("ERROR", "llm.enable 已开启，但 base_url、model_name 或 prompt 为空，LLM 提取不会生效")
+	}
 
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
@@ -1091,9 +1095,24 @@ func getMPRISMetadataFiltered(preferred string, playingOnly bool) *PlayerMetadat
 	return metadata
 }
 
+// lastMPRISFailure 用于去重：D-Bus 出问题时每 250ms 都会走到这里。
+var lastMPRISFailure string
+
+// logMPRISFailure 记录 MPRIS 读取失败。读不到会话总线或服务列表时没有任何兜底，
+// 整首歌都显示不出来，属于没人处理的错误，记 ERROR；同一条错误只记一次。
+func logMPRISFailure(action string, err error) {
+	message := action + ": " + err.Error()
+	if message == lastMPRISFailure {
+		return
+	}
+	lastMPRISFailure = message
+	logEvent("ERROR", "%s：%v", action, err)
+}
+
 func readMPRISMetadata(preferred string, playingOnly bool) (*PlayerMetadata, string) {
 	conn, err := dbus.SessionBus()
 	if err != nil {
+		logMPRISFailure("连接 D-Bus 会话总线失败", err)
 		return nil, ""
 	}
 	// 会话总线是进程内共享连接，关闭它会同时断开其他使用者（例如同一进程里
@@ -1101,8 +1120,10 @@ func readMPRISMetadata(preferred string, playingOnly bool) (*PlayerMetadata, str
 
 	names, err := mprisBusNames(conn)
 	if err != nil {
+		logMPRISFailure("读取 D-Bus 服务列表失败", err)
 		return nil, ""
 	}
+	lastMPRISFailure = ""
 
 	mode := preferred
 	if mode == "" {

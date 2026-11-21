@@ -64,9 +64,9 @@ func TestLyricsFailureLogDeduplication(t *testing.T) {
 	if count := strings.Count(output.String(), "未找到歌词"); count != 1 {
 		t.Fatalf("expected one failure log, got %d: %s", count, output.String())
 	}
-	// 没找到歌词是预期之内的情况（播放器常常稍后才拿到歌词），只记 INFO。
-	if strings.Contains(output.String(), "[WARN]") {
-		t.Fatalf("歌词未找到应记 INFO 而不是 WARN: %s", output.String())
+	// 没找到歌词是错误，但会重试，属于已处理的情况，记 WARN。
+	if count := strings.Count(output.String(), "[WARN]"); count != 1 {
+		t.Fatalf("歌词未找到应记一条 WARN，got %d: %s", count, output.String())
 	}
 	logLyricsResult("解析", &ParsedLyrics{Source: "API"}, &failed)
 	logLyricsResult("解析", nil, &failed)

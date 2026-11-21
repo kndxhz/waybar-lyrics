@@ -175,7 +175,7 @@ func controlPlayer(command string) error {
 		if err := controlFallbackPlayer(ctx, target, command); err == nil {
 			return nil
 		} else {
-			logEvent("INFO", "控制暂停回退的媒体源 %s 失败，改为控制 SPlayer：%v", target, err)
+			logEvent("WARN", "控制暂停回退的媒体源 %s 失败，改为控制 SPlayer：%v", target, err)
 		}
 	}
 	switch appConfig.Mode {
@@ -249,7 +249,7 @@ func controlPlayerctlFallback(ctx context.Context, cause error, command string) 
 	if err := controlPlayerctlInMode(ctx, "mpris", command); err != nil {
 		return err
 	}
-	logEvent("INFO", "SPlayer 不可用（%v），已回退到 playerctl 控制其他播放器", cause)
+	logEvent("WARN", "SPlayer 不可用（%v），已回退到 playerctl 控制其他播放器", cause)
 	return nil
 }
 
@@ -420,25 +420,53 @@ func splayerBaseURL() string {
 	return buildSPlayerURL(appConfig.SPlayer.Port, "/api")
 }
 
-func fetchJSONAt(baseURL, path string, target any) bool {
+// fetchJSONAt 请求 SPlayer-Next 的 JSON 接口，失败时返回带接口名的错误，
+// 便于调用方按「有没有兜底」决定记 WARN 还是 ERROR。
+func fetchJSONAt(baseURL, path string, target any) error {
 	if baseURL == "" {
-		return false
+		return errors.New("SPlayer-Next API 地址为空")
 	}
 	client := &http.Client{Timeout: 1200 * time.Millisecond}
 	res, err := client.Get(baseURL + path)
 	if err != nil {
-		return false
+		return fmt.Errorf("请求 %s 失败：%w", path, err)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return false
+		return fmt.Errorf("%s 返回 %s", path, res.Status)
 	}
 	body, err := io.ReadAll(res.Body)
-	return err == nil && json.Unmarshal(body, target) == nil
+	if err != nil {
+		return fmt.Errorf("读取 %s 响应失败：%w", path, err)
+	}
+	if err := json.Unmarshal(body, target); err != nil {
+		return fmt.Errorf("解析 %s 响应失败：%w", path, err)
+	}
+	return nil
 }
 
-func fetchJSON(path string, target any) bool {
+func fetchJSON(path string, target any) error {
 	return fetchJSONAt(splayerBaseURL(), path, target)
+}
+
+// lastSPlayerNextError 用于去重：同一台播放器的同一个错误只在第一次出现时记录，
+// 避免 SPlayer 没开时每 250ms 刷一条日志。
+var lastSPlayerNextError string
+var lastSPlayerLyricsError string
+
+// logSPlayerNextUnavailable 按有没有兜底决定日志等级：能回退到 MPRIS 属于已处理的
+// 错误，记 WARN；mpris-fallback 关闭时功能直接不可用，记 ERROR。
+func logSPlayerNextUnavailable(err error) {
+	message := err.Error()
+	if message == lastSPlayerNextError {
+		return
+	}
+	lastSPlayerNextError = message
+	if mprisFallbackEnabled(appConfig) {
+		logEvent("WARN", "读取 SPlayer-Next 曲目失败，已回退到 MPRIS：%v", err)
+		return
+	}
+	logEvent("ERROR", "读取 SPlayer-Next 曲目失败，且 mpris-fallback 已关闭：%v", err)
 }
 
 func getSPlayerNextMetadata() *PlayerMetadata {
@@ -450,9 +478,11 @@ func getSPlayerNextMetadata() *PlayerMetadata {
 // 旧版本接口没有 state / playing 字段时按正在播放处理，保持原有行为。
 func getSPlayerNextPlayback() (*PlayerMetadata, bool) {
 	var raw splayerNextSnapshot
-	if !fetchJSON("/now-playing", &raw) {
+	if err := fetchJSON("/now-playing", &raw); err != nil {
+		logSPlayerNextUnavailable(err)
 		return nil, false
 	}
+	lastSPlayerNextError = ""
 	playing := true
 	switch state := strings.ToLower(strings.TrimSpace(raw.State)); {
 	case state != "":
@@ -508,9 +538,15 @@ func getSPlayerNextPlayback() (*PlayerMetadata, bool) {
 
 func getSPlayerNextLyrics() *ParsedLyrics {
 	var response json.RawMessage
-	if !fetchJSON("/lyrics", &response) {
+	if err := fetchJSON("/lyrics", &response); err != nil {
+		// 播放器没有歌词属于常态，后续会按歌名搜索；同一条错误只记一次。
+		if message := err.Error(); message != lastSPlayerLyricsError {
+			lastSPlayerLyricsError = message
+			logEvent("WARN", "读取 SPlayer-Next 歌词失败，改为按歌名搜索：%v", err)
+		}
 		return nil
 	}
+	lastSPlayerLyricsError = ""
 	return parseSPlayerNextLyrics(response)
 }
 
