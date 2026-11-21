@@ -283,9 +283,12 @@ func main() {
 			}
 		}
 
-		text := buildCurrentLyricText(metadata, currentLyrics)
-		if text == "" {
-			text = buildText(metadata)
+		text, show := currentText(metadata, currentLyrics)
+		if !show {
+			// 有歌词但这一刻没有对应行（例如前奏）：什么都不输出，让 waybar 保持
+			// 上一句，而不是把「歌手 - 歌名」当成一行歌词塞进去。
+			<-ticker.C
+			continue
 		}
 
 		out := WaybarOutput{
@@ -301,6 +304,19 @@ func main() {
 
 		<-ticker.C
 	}
+}
+
+// currentText 决定这一轮往 waybar 输出什么文本。第二个返回值为 false 时表示
+// 有歌词却没有落在当前时间戳上的行，调用方应保持上一句不动；没有歌词时才退回
+// 「歌手 - 歌名」。
+func currentText(metadata *PlayerMetadata, lyrics *ParsedLyrics) (string, bool) {
+	if text := buildCurrentLyricText(metadata, lyrics); text != "" {
+		return text, true
+	}
+	if lyrics != nil {
+		return "", false
+	}
+	return buildText(metadata), true
 }
 
 // buildIdentityKey 与 buildSongKey 相同，但用 LLM 补全前的标题歌手。
