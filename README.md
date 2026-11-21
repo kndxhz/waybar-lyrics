@@ -30,7 +30,7 @@ sudo install -Dm755 waybar-lyrics-linux-amd64 /usr/local/bin/waybar-lyrics
 ```yaml
 mode: splayer-next   # mpris、splayer 或 splayer-next
 mpris-fallback: true # SPlayer 读不到歌曲时回退到 MPRIS；mpris 模式下忽略
-mpris-ms: 500        # MPRIS 来源歌词的时间补偿（毫秒）：正数提前，负数延后，0 关闭
+mpris-ms: 300        # MPRIS 来源歌词的时间补偿（毫秒）：正数提前，负数延后，0 关闭
 splayer:
   address: 127.0.0.1 # SPlayer-Next API 地址
   port: 14558        # SPlayer-Next API 端口
@@ -59,7 +59,7 @@ llm:
     元数据：{metadata}
 ```
 
-`--mode` / `-m` 可临时覆盖配置文件中的模式。`mpris-ms` 作用于 `mpris` 模式以及 SPlayer 回退到 MPRIS 的情况；SPlayer-Next 通过 HTTP API 提供的进度仍用 `splayer.latency_ms`。日志每次启动时清空，仅 `DEBUG` 级别记录完整歌词。
+`--mode` / `-m` 可临时覆盖配置文件中的模式。`mpris-ms` 作用于 `mpris` 模式以及 SPlayer 回退到 MPRIS 的情况；SPlayer-Next 通过 HTTP API 提供的进度仍用 `splayer.latency_ms`。日志每次启动时清空，仅 `DEBUG` 级别记录完整歌词。日志等级按错误有没有兜底区分：出错的会重试或有回退时记 `WARN`，出错且没有兜底（例如开启 `llm` 却缺少必要配置、读不到播放器）记 `ERROR`。
 
 ### 播放器模式
 
